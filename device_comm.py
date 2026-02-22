@@ -100,6 +100,38 @@ class DeviceManager:
         full_cmd = f"\x1b\x02{addr}{command}*"
         return self._send_raw(full_cmd.encode('ascii'))
 
+    def initialize_texmate_meters(self):
+        """
+        Configures the Texmate meters (Ports 1-4) with default scaling and formats
+        based on ModuleAP10.bas InitTexmate.
+        """
+        print("Initializing Texmate Meters...")
+        
+        # Global settings for all meters (1-4)
+        for i in range(1, 5):
+            # Disable alarm set points (SW130 200)
+            self.send_texmate_cmd(i, "SW130 200")
+            
+        # Port 2: Pressure
+        # Scale=2.0000, Zero=0.0, Display=00.0 (006)
+        self.send_texmate_cmd(2, "SW025 2.0000")
+        self.send_texmate_cmd(2, "SW028 0.0")
+        self.send_texmate_cmd(2, "SW200 006")
+        
+        # Port 3: Voltage
+        # Scale=1.000, Zero=.01, Display=0.00 (005)
+        self.send_texmate_cmd(3, "SW025 1.000")
+        self.send_texmate_cmd(3, "SW028 .01")
+        self.send_texmate_cmd(3, "SW200 005")
+        
+        # Port 4: Current
+        # Scale=.300, Zero=.1, Display=00.0 (006)
+        self.send_texmate_cmd(4, "SW025 .300")
+        self.send_texmate_cmd(4, "SW028 .1")
+        self.send_texmate_cmd(4, "SW200 006")
+        
+        return True
+
     def get_thermocouple_type(self):
         """
         Reads the current thermocouple configuration from Port 1.
@@ -342,3 +374,13 @@ class MotorValveController:
             except Exception as e:
                 print(f"Motor Serial error: {e}")
         return False
+
+    def reset_hardware(self):
+        """
+        Resets valves and moves motors to baseline.
+        Based on ModuleAP10.bas SetZero.
+        """
+        # AA0;BA0 -> Valves Closed
+        # AM-600;BM-600 -> Move motors
+        cmd = "AA0;BA0;AM-600;BM-600"
+        return self.send_command(cmd)

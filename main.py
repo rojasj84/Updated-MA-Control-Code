@@ -383,6 +383,10 @@ class BaseAPGUI:
         """Opens the serial port and starts the polling loop."""
         if self.device_mgr.open():
             print("Serial port opened successfully.")
+            
+            # Initialize meters based on ModuleAP10.bas
+            self.device_mgr.initialize_texmate_meters()
+            
             self.polling_active = True
             self.poll_devices()
         else:

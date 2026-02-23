@@ -398,7 +398,7 @@ class BaseAPGUI:
         self.create_widgets()
         
         # Attempt connection and start polling
-        self.connect_hardware()
+        self.root.after(200, self.connect_hardware)
 
     def create_widgets(self):
         # --- Title ---
@@ -617,16 +617,16 @@ class BaseAPGUI:
         # in_simulation_mode = True
             
         # Attempt to open motor port as well
-        # if self.motor_mgr.open():
-        #     print("Motor/Valve port opened successfully.")
-        # else:
-        #     print("Failed to open Motor/Valve port. Enabling simulation for motors.")
-        #     self.motor_mgr.enable_simulation()
-        #     in_simulation_mode = True
+        if self.motor_mgr.open():
+            print("Motor/Valve port opened successfully.")
+        else:
+            print("Failed to open Motor/Valve port. Enabling simulation for motors.")
+            self.motor_mgr.enable_simulation()
+            in_simulation_mode = True
         
-        print("DAX (Motor/Valve) connection disabled. Enabling simulation for motors.")
-        self.motor_mgr.enable_simulation()
-        in_simulation_mode = True
+        # print("DAX (Motor/Valve) connection disabled. Enabling simulation for motors.")
+        # self.motor_mgr.enable_simulation()
+        # in_simulation_mode = True
 
         # If any port failed, open the developer console to show simulated traffic
         if in_simulation_mode:

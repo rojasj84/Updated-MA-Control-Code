@@ -15,6 +15,11 @@ class DebugWindow:
     def log(self, message):
         try:
             self.text.insert(tk.END, str(message) + "\n")
+            
+            # Limit log size to prevent memory issues over long runs (keep last 2000 lines)
+            if int(self.text.index('end-1c').split('.')[0]) > 2000:
+                self.text.delete('1.0', '2.0')
+                
             self.text.see(tk.END)
         except tk.TclError:
             pass
@@ -99,19 +104,160 @@ class ZeroPressureDialog:
         else:
             messagebox.showerror("Error", msg, parent=self.top)
 
-class PurgeDialog:
-    def __init__(self, master, motor_mgr):
+class PressureProfileDialog:
+    def __init__(self, master, profile, on_save):
         self.top = tk.Toplevel(master)
-        self.top.title("Purge System")
-        self.top.geometry("600x550")
+        self.top.title("Input Pressure")
+        self.top.geometry("600x450")
+        # Work on a copy of the profile so we can cancel if needed
+        self.profile = list(profile) 
+        self.on_save = on_save
+        
+        # --- Input Fields ---
+        input_frame = tk.LabelFrame(self.top, text="New Segment", padx=10, pady=10)
+        input_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(input_frame, text="Start Pressure (Bars):").grid(row=0, column=0)
+        self.ent_start = tk.Entry(input_frame, width=10)
+        self.ent_start.grid(row=1, column=0, padx=5)
+        
+        tk.Label(input_frame, text="Final Pressure (Bars):").grid(row=0, column=1)
+        self.ent_end = tk.Entry(input_frame, width=10)
+        self.ent_end.grid(row=1, column=1, padx=5)
+        
+        tk.Label(input_frame, text="Duration (hours):").grid(row=0, column=2)
+        self.ent_duration = tk.Entry(input_frame, width=10)
+        self.ent_duration.grid(row=1, column=2, padx=5)
+        
+        tk.Button(input_frame, text="Add Segment", command=self.add_segment).grid(row=1, column=3, padx=10)
+
+        # --- List Display ---
+        list_frame = tk.Frame(self.top)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        columns = ("start", "end", "duration", "rate")
+        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=8)
+        self.tree.heading("start", text="Start Pressure (Bars)")
+        self.tree.heading("end", text="Final Pressure (Bars)")
+        self.tree.heading("duration", text="Duration (hours)")
+        self.tree.heading("rate", text="Rate (Bars/Hr)")
+        
+        self.tree.column("start", width=100, anchor="center")
+        self.tree.column("end", width=100, anchor="center")
+        self.tree.column("duration", width=100, anchor="center")
+        self.tree.column("rate", width=100, anchor="center")
+        
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # --- Buttons ---
+        btn_frame = tk.Frame(self.top)
+        btn_frame.pack(pady=10)
+        tk.Button(btn_frame, text="Save & Exit", bg="green", fg="white", command=self.save_exit).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Clear All", bg="red", fg="white", command=self.clear_all).pack(side=tk.LEFT, padx=5)
+
+        self.refresh_list()
+
+    def add_segment(self):
+        try:
+            s = float(self.ent_start.get())
+            e = float(self.ent_end.get())
+            d = float(self.ent_duration.get())
+            
+            if d <= 0:
+                messagebox.showerror("Error", "Duration must be positive.", parent=self.top)
+                return
+            
+            # Calculate Rate (Bars/hr)
+            r = (e - s) / d
+            
+            self.profile.append({'start': s, 'end': e, 'duration': d, 'rate': r})
+            self.refresh_list()
+            
+            # Auto-fill next start with current end (Convenience)
+            self.ent_start.delete(0, tk.END)
+            self.ent_start.insert(0, str(e))
+            self.ent_end.delete(0, tk.END)
+            self.ent_duration.delete(0, tk.END)
+            self.ent_end.focus()
+        except ValueError:
+            messagebox.showerror("Error", "Invalid numbers.", parent=self.top)
+
+    def refresh_list(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for step in self.profile:
+            d = step.get('duration', 0)
+            r = step.get('rate', 0)
+            self.tree.insert("", tk.END, values=(step['start'], step['end'], d, f"{r:.2f}"))
+
+    def clear_all(self):
+        self.profile.clear()
+        self.refresh_list()
+
+    def save_exit(self):
+        self.on_save(self.profile)
+        self.top.destroy()
+
+class PowerControlDialog:
+    def __init__(self, master, current_power, target_power, active, on_update):
+        self.top = tk.Toplevel(master)
+        self.top.title("Power Control")
+        self.top.geometry("400x300")
+        self.on_update = on_update
+        
+        # Target Power
+        tk.Label(self.top, text="Target Power (Watts):", font=("Arial", 12)).pack(pady=(20, 5))
+        self.ent_target = tk.Entry(self.top, font=("Arial", 12), justify='center')
+        self.ent_target.insert(0, str(target_power))
+        self.ent_target.pack(pady=5)
+        
+        # Current Power
+        self.lbl_power = tk.Label(self.top, text=f"Current Power: {current_power:.2f} W", font=("Arial", 14, "bold"), fg="blue")
+        self.lbl_power.pack(pady=20)
+        
+        # Toggle Button
+        btn_text = "STOP Control" if active else "START Control"
+        btn_bg = "red" if active else "green"
+        self.btn_toggle = tk.Button(self.top, text=btn_text, bg=btn_bg, fg="white", font=("Arial", 12, "bold"), command=self.toggle)
+        self.btn_toggle.pack(fill=tk.X, padx=50, pady=10)
+        
+        self.active = active
+
+    def update_readings(self, power, voltage, current):
+        self.lbl_power.config(text=f"Power: {power:.2f} W\n({voltage:.2f} V, {current:.2f} A)")
+
+    def toggle(self):
+        self.active = not self.active
+        try:
+            target = float(self.ent_target.get())
+        except ValueError:
+            target = 0.0
+            
+        self.btn_toggle.config(text="STOP Control" if self.active else "START Control", bg="red" if self.active else "green")
+        self.on_update(self.active, target)
+
+class SystemControlsDialog:
+    def __init__(self, master, device_mgr, motor_mgr):
+        self.top = tk.Toplevel(master)
+        self.top.title("System Controls")
+        self.top.geometry("800x600")
+        self.device_mgr = device_mgr
         self.motor_mgr = motor_mgr
         
+        # Layout: Left Pane (Motors/Purge), Right Pane (Voltage/Calibration)
+        left_pane = tk.Frame(self.top)
+        left_pane.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        right_pane = tk.Frame(self.top)
+        right_pane.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # --- Left Pane: Purge & Motors ---
         # Status Label
-        self.lbl_status = tk.Label(self.top, text="System Ready", font=("Arial", 12, "bold"), fg="blue")
+        self.lbl_status = tk.Label(left_pane, text="System Ready", font=("Arial", 12, "bold"), fg="blue")
         self.lbl_status.pack(pady=10)
 
         # Sequence Buttons
-        seq_frame = tk.LabelFrame(self.top, text="Automated Sequences", padx=10, pady=10)
+        seq_frame = tk.LabelFrame(left_pane, text="Purge Sequences", padx=10, pady=10)
         seq_frame.pack(fill=tk.X, padx=10, pady=5)
         
         tk.Button(seq_frame, text="START PURGE", bg="green", fg="white", font=("Arial", 10, "bold"), 
@@ -121,7 +267,7 @@ class PurgeDialog:
                   command=self.stop_purge_sequence).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
 
         # Manual Controls
-        man_frame = tk.LabelFrame(self.top, text="Manual Controls", padx=10, pady=10)
+        man_frame = tk.LabelFrame(left_pane, text="Motor & Valve Controls", padx=10, pady=10)
         man_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         # Grid layout for manual controls
@@ -144,6 +290,33 @@ class PurgeDialog:
         tk.Label(man_frame, text="DOWN Motor").grid(row=3, column=0, padx=5, pady=5)
         tk.Button(man_frame, text="+100", command=lambda: self.send("B+100")).grid(row=3, column=1, padx=5, pady=5)
         tk.Button(man_frame, text="-100", command=lambda: self.send("B-100")).grid(row=3, column=2, padx=5, pady=5)
+
+        # Reset Hardware Button
+        tk.Button(man_frame, text="RESET HARDWARE", bg="#8B0000", fg="white", command=self.reset_hardware_click).grid(row=4, column=0, columnspan=3, pady=10, sticky="ew")
+
+        # Keyboard Shortcuts
+        self.top.bind('<Up>', lambda e: self.send("A+100"))
+        self.top.bind('<Down>', lambda e: self.send("A-100"))
+        self.top.bind('<Right>', lambda e: self.send("B+100")) 
+        self.top.bind('<Left>', lambda e: self.send("B-100"))
+        
+        tk.Label(man_frame, text="Keys: Up/Down (Up Motor), Left/Right (Down Motor)", font=("Arial", 8, "italic")).grid(row=5, column=0, columnspan=3)
+
+        # --- Right Pane: Calibration ---
+
+        # Calibration
+        cal_frame = tk.LabelFrame(right_pane, text="Calibration", padx=10, pady=10)
+        cal_frame.pack(fill=tk.X, pady=20)
+        
+        tk.Button(cal_frame, text="Zero Pressure Calibration", bg="#FFDDDD", command=self.open_zero_pressure).pack(fill=tk.X, pady=5)
+
+    def open_zero_pressure(self):
+        ZeroPressureDialog(self.top, self.device_mgr)
+
+    def reset_hardware_click(self):
+        if messagebox.askyesno("Confirm Reset", "Close valves and reset motors?", parent=self.top):
+            self.motor_mgr.reset_hardware()
+            self.lbl_status.config(text="Hardware Reset Executed.", fg="black")
 
     def send(self, cmd):
         self.motor_mgr.send_command(cmd)
@@ -205,11 +378,18 @@ class BaseAPGUI:
         self.motor_mgr = MotorValveController() # Second serial port controller
         self.target_voltage = 0.0 # Tracks the state for Port 5 (Omega)
         self.polling_active = False
+        self.pressure_profile = [] # Stores the pressure recipe
+        
+        # Power Control State
+        self.power_control_active = False
+        self.target_power_watts = 0.0
+        self.power_dialog = None
         
         # Graphing State
         self.current_view = "Temperature"
         self.data_history = {"Temperature": [], "Pressure": [], "Wattage": []}
         self.start_time = time.time()
+        self.recording_active = False
 
         # Use a main frame for padding and layout
         self.main_frame = ttk.Frame(root, padding="10")
@@ -234,10 +414,9 @@ class BaseAPGUI:
         left_btn_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
         
         buttons = [
-            ("Start Process", "#80FF80", self.on_click),
-            ("Stop Process", None, self.on_click),
-            ("Purge", None, self.open_purge_dialog),
-            ("Zero Pressure", None, self.open_zero_pressure),
+            ("Start Process", "#80FF80", self.start_process),
+            ("Stop Process", None, self.stop_process),
+            ("System Controls", "#ADD8E6", self.open_system_controls),
             ("Error Display", None, self.on_click)
         ]
         
@@ -269,7 +448,7 @@ class BaseAPGUI:
         readout_frame.pack(fill=tk.X, pady=10)
 
         headers = [
-            ("Temp Type", "red"), ("Pressure", "green"), 
+            ("Temp Type", "red"), ("Pressure (Bars)", "green"), 
             ("Voltage", "blue"), ("Current", "magenta"), ("Resistance", "black")
         ]
         
@@ -292,7 +471,7 @@ class BaseAPGUI:
         col1 = ttk.Frame(bottom_frame)
         col1.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 10))
         tk.Button(col1, text="Input Temp Values", command=self.open_temp_config).pack(fill=tk.X, pady=2)
-        tk.Button(col1, text="Input Pressure Values", command=self.on_click).pack(fill=tk.X, pady=2)
+        tk.Button(col1, text="Input Pressure Values", command=self.open_pressure_config).pack(fill=tk.X, pady=2)
         tk.Button(col1, text="Start Manual Control", command=self.on_click).pack(fill=tk.X, pady=2)
 
         # Column 2: Start Controls
@@ -300,7 +479,7 @@ class BaseAPGUI:
         col2.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 10))
         tk.Button(col2, text="Start Control Temperature", command=self.on_click).pack(fill=tk.X, pady=2)
         tk.Button(col2, text="Start Control Pressure", command=self.on_click).pack(fill=tk.X, pady=2)
-        tk.Button(col2, text="Start Power Control", command=self.on_click).pack(fill=tk.X, pady=2)
+        tk.Button(col2, text="Start Power Control", command=self.open_power_control).pack(fill=tk.X, pady=2)
 
         # Column 3: Manual Adjust
         col3 = ttk.LabelFrame(bottom_frame, text="Manual Adjust")
@@ -355,6 +534,12 @@ class BaseAPGUI:
         w = self.graph_canvas.winfo_width()
         h = self.graph_canvas.winfo_height()
         
+        # Margins
+        x_margin = 40
+        y_margin = 30
+        plot_w = w - x_margin - 20
+        plot_h = h - y_margin - 40
+        
         # Draw Title
         self.graph_canvas.create_text(w/2, 20, text=f"{self.current_view} vs Time", font=("Arial", 12, "bold"), fill="black")
 
@@ -375,9 +560,43 @@ class BaseAPGUI:
         # Axis Labels
         self.graph_canvas.create_text(w/2, h-10, text="Time (s)", font=("Arial", 10))
         self.graph_canvas.create_text(15, h/2, text=self.current_view, angle=90, font=("Arial", 10))
+        
+        # Plot Data
+        data = self.data_history.get(self.current_view, [])
+        if len(data) > 1:
+            times = [p[0] for p in data]
+            values = [p[1] for p in data]
+            
+            # Auto-scale
+            min_t, max_t = times[0], times[-1]
+            min_v, max_v = min(values), max(values)
+            
+            # Avoid divide by zero / flat line
+            if max_t == min_t: max_t += 1.0
+            if max_v == min_v: max_v += 1.0; min_v -= 1.0
+            
+            points = []
+            for t, v in data:
+                x = x_margin + (t - min_t) / (max_t - min_t) * plot_w
+                y = (h - y_margin) - (v - min_v) / (max_v - min_v) * plot_h
+                points.extend([x, y])
+            
+            self.graph_canvas.create_line(points, fill="blue", width=2)
 
     def on_click(self):
         print("Button clicked")
+
+    def start_process(self):
+        """Starts recording data and plotting."""
+        self.data_history = {"Temperature": [], "Pressure": [], "Wattage": []}
+        self.start_time = time.time()
+        self.recording_active = True
+        print("Process Started: Recording Data.")
+
+    def stop_process(self):
+        """Stops recording data."""
+        self.recording_active = False
+        print("Process Stopped.")
 
     def connect_hardware(self):
         """Opens the serial port and starts the polling loop."""
@@ -407,6 +626,12 @@ class BaseAPGUI:
         # 0: Temp Type (Port 1), 1: Pressure (Port 2), 2: Voltage (Port 3), etc.
         # Adjust mapping as per actual hardware setup
         port_mapping = [1, 2, 3, 4, 5] 
+        
+        # Variables for Power Control
+        meas_volts = 0.0
+        meas_amps = 0.0
+        meas_temp = 0.0
+        meas_press = 0.0
 
         for i, port in enumerate(port_mapping):
             if i < len(self.readout_labels):
@@ -423,42 +648,94 @@ class BaseAPGUI:
                         val_str = resp # Raw response or parse it
                 
                 self.readout_labels[i].config(text=val_str)
+                
+                # Parse values for control loop (Port 3=Volts, Port 4=Amps)
+                try:
+                    # Handle simulation or raw strings
+                    clean_val = val_str.replace('+', '').replace('SIM_ACK', '0')
+                    val = float(clean_val)
+                    if port == 1: meas_temp = val
+                    if port == 2: meas_press = val
+                    if port == 3: meas_volts = val
+                    if port == 4: meas_amps = val
+                except ValueError:
+                    pass
+
+        # Calculate Power
+        current_power = meas_volts * meas_amps
+        
+        if self.recording_active:
+            # Update History
+            timestamp = time.time() - self.start_time
+            self.data_history["Temperature"].append((timestamp, meas_temp))
+            self.data_history["Pressure"].append((timestamp, meas_press))
+            self.data_history["Wattage"].append((timestamp, current_power))
+            
+            # Keep history manageable (e.g., last 3600 points)
+            for key in self.data_history:
+                if len(self.data_history[key]) > 3600:
+                    self.data_history[key].pop(0)
+            
+            # Refresh Graph
+            self.draw_graph()
+        
+        # Update Power Dialog if open
+        if self.power_dialog and self.power_dialog.top.winfo_exists():
+            self.power_dialog.update_readings(current_power, meas_volts, meas_amps)
+        else:
+            self.power_dialog = None
+
+        # Power Control Loop
+        if self.power_control_active:
+            error = self.target_power_watts - current_power
+            # Simple Integral Control: Adjust voltage by a small fraction of the error
+            # Gain K = 0.01 (Conservative starting point)
+            adjustment = error * 0.01
+            
+            # Apply adjustment
+            self.target_voltage += adjustment
+            
+            # Clamp to safe limits (0-10V)
+            self.target_voltage = max(0.0, min(10.0, self.target_voltage))
+            
+            # Send to Omega
+            self.device_mgr.set_omega_voltage(self.target_voltage)
 
         # Schedule next poll (e.g., every 500ms)
         self.root.after(500, self.poll_devices)
 
-    def adjust_voltage(self, direction):
-        """
-        Adjusts the voltage up or down based on the entry value.
-        direction: 1 for Up, -1 for Down
-        """
-        try:
-            step = float(self.ent_manual_inc.get())
-        except ValueError:
-            step = 0.05 # Default fallback
-
-        self.target_voltage += (step * direction)
-        
-        # Clamp between 0 and 10V
-        self.target_voltage = max(0.0, min(10.0, self.target_voltage))
-        
-        print(f"Setting Voltage to: {self.target_voltage:.3f} V")
-        
-        # Send to device
-        if self.polling_active:
-            self.device_mgr.set_omega_voltage(self.target_voltage)
+    def update_voltage_state(self, new_voltage):
+        """Callback to update target voltage from Manual Control Dialog."""
+        self.target_voltage = new_voltage
 
     def open_temp_config(self):
         """Opens the Thermocouple Configuration Dialog."""
         ThermocoupleDialog(self.root, self.device_mgr)
 
+    def open_pressure_config(self):
+        """Opens the Pressure Profile Dialog."""
+        PressureProfileDialog(self.root, self.pressure_profile, self.save_pressure_profile)
+
+    def save_pressure_profile(self, new_profile):
+        self.pressure_profile = new_profile
+        print(f"Pressure Profile Saved: {len(self.pressure_profile)} segments")
+
     def open_zero_pressure(self):
         """Opens the Zero Pressure Dialog."""
         ZeroPressureDialog(self.root, self.device_mgr)
 
-    def open_purge_dialog(self):
-        """Opens the Purge System Dialog."""
-        PurgeDialog(self.root, self.motor_mgr)
+    def open_power_control(self):
+        """Opens the Power Control Dialog."""
+        self.power_dialog = PowerControlDialog(self.root, 0.0, self.target_power_watts, self.power_control_active, self.update_power_settings)
+
+    def update_power_settings(self, active, target):
+        """Callback from PowerControlDialog."""
+        self.power_control_active = active
+        self.target_power_watts = target
+
+    def open_system_controls(self):
+        """Opens the System Controls Dialog."""
+        SystemControlsDialog(self.root, self.device_mgr, self.motor_mgr)
 
     def open_developer_mode(self):
         """Opens the debug window and enables simulation if needed."""

@@ -1,7 +1,12 @@
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+from tkinter import filedialog
+import threading
+import queue
 import time
+import os
+import datetime
 from device_comm import DeviceManager, MotorValveController
 
 class DebugWindow:
@@ -25,11 +30,12 @@ class DebugWindow:
             pass
 
 class ThermocoupleDialog:
-    def __init__(self, master, device_mgr):
+    def __init__(self, master, device_mgr, serial_lock):
         self.top = tk.Toplevel(master)
         self.top.title("Thermocouple Config")
         self.top.geometry("300x150")
         self.device_mgr = device_mgr
+        self.serial_lock = serial_lock
         
         tk.Label(self.top, text="Select Thermocouple Type:", font=("Arial", 10, "bold")).pack(pady=10)
         
@@ -46,18 +52,20 @@ class ThermocoupleDialog:
         tk.Button(btn_frame, text="mV", width=8, command=lambda: self.set_type("mV")).pack(side=tk.LEFT, padx=5)
 
     def set_type(self, tc_type):
-        self.device_mgr.set_thermocouple_type(tc_type)
-        # Verify change
-        new_val = self.device_mgr.get_thermocouple_type()
+        with self.serial_lock:
+            self.device_mgr.set_thermocouple_type(tc_type)
+            # Verify change
+            new_val = self.device_mgr.get_thermocouple_type()
         self.lbl_current.config(text=f"Current: {new_val}")
         print(f"Thermocouple set to {tc_type}")
 
 class ZeroPressureDialog:
-    def __init__(self, master, device_mgr):
+    def __init__(self, master, device_mgr, serial_lock):
         self.top = tk.Toplevel(master)
         self.top.title("Zero Pressure Calibration")
         self.top.geometry("400x350")
         self.device_mgr = device_mgr
+        self.serial_lock = serial_lock
         
         # Safety Warnings
         warn_frame = tk.LabelFrame(self.top, text="SAFETY CHECKS", fg="red", font=("Arial", 10, "bold"))
@@ -88,7 +96,8 @@ class ZeroPressureDialog:
         self.update_reading()
 
     def update_reading(self):
-        resp = self.device_mgr.send_texmate_cmd(2, "SR")
+        with self.serial_lock:
+            resp = self.device_mgr.send_texmate_cmd(2, "SR")
         if resp:
             self.lbl_current.config(text=f"Current Reading: {resp}")
         elif self.device_mgr.simulated:
@@ -97,7 +106,8 @@ class ZeroPressureDialog:
             self.lbl_current.config(text="Current Reading: Error")
 
     def do_zero(self):
-        success, msg = self.device_mgr.zero_pressure_port2()
+        with self.serial_lock:
+            success, msg = self.device_mgr.zero_pressure_port2()
         if success:
             messagebox.showinfo("Success", msg, parent=self.top)
             self.top.destroy()
@@ -237,12 +247,13 @@ class PowerControlDialog:
         self.on_update(self.active, target)
 
 class SystemControlsDialog:
-    def __init__(self, master, device_mgr, motor_mgr):
+    def __init__(self, master, device_mgr, motor_mgr, serial_lock):
         self.top = tk.Toplevel(master)
         self.top.title("System Controls")
         self.top.geometry("800x600")
         self.device_mgr = device_mgr
         self.motor_mgr = motor_mgr
+        self.serial_lock = serial_lock
         
         # Layout: Left Pane (Motors/Purge), Right Pane (Voltage/Calibration)
         left_pane = tk.Frame(self.top)
@@ -311,7 +322,7 @@ class SystemControlsDialog:
         tk.Button(cal_frame, text="Zero Pressure Calibration", bg="#FFDDDD", command=self.open_zero_pressure).pack(fill=tk.X, pady=5)
 
     def open_zero_pressure(self):
-        ZeroPressureDialog(self.top, self.device_mgr)
+        ZeroPressureDialog(self.top, self.device_mgr, self.serial_lock)
 
     def reset_hardware_click(self):
         if messagebox.askyesno("Confirm Reset", "Close valves and reset motors?", parent=self.top):
@@ -368,6 +379,69 @@ class SystemControlsDialog:
         
         messagebox.showinfo("Reset Complete", "Open RETRACT valve OUT only\nOpen MASTER press valve", parent=self.top)
 
+class SaveSettingsDialog:
+    def __init__(self, master, current_dir, current_name, current_interval, on_save):
+        self.top = tk.Toplevel(master)
+        self.top.title("Save File Settings")
+        self.top.geometry("500x350")
+        self.on_save = on_save
+        self.selected_dir = current_dir
+
+        # Directory Selection
+        tk.Label(self.top, text="Save Directory:", font=("Arial", 10, "bold")).pack(anchor="w", padx=20, pady=(20, 5))
+        
+        dir_frame = tk.Frame(self.top)
+        dir_frame.pack(fill=tk.X, padx=20)
+        
+        self.lbl_dir = tk.Label(dir_frame, text=self.selected_dir, relief="sunken", anchor="w", bg="white", height=2)
+        self.lbl_dir.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        tk.Button(dir_frame, text="Browse...", command=self.browse_dir).pack(side=tk.LEFT, padx=(10, 0))
+
+        # Filename Input
+        tk.Label(self.top, text="Base File Name:", font=("Arial", 10, "bold")).pack(anchor="w", padx=20, pady=(20, 5))
+        
+        self.ent_name = tk.Entry(self.top, font=("Arial", 10))
+        self.ent_name.insert(0, current_name)
+        self.ent_name.pack(fill=tk.X, padx=20)
+        
+        tk.Label(self.top, text="Format: YYYYMMDD_HHMMSS_FileName.csv", fg="gray", font=("Arial", 8, "italic")).pack(anchor="w", padx=20)
+
+        # Interval Input
+        tk.Label(self.top, text="Save Interval (minutes):", font=("Arial", 10, "bold")).pack(anchor="w", padx=20, pady=(20, 5))
+        self.ent_interval = tk.Entry(self.top, font=("Arial", 10))
+        self.ent_interval.insert(0, str(current_interval))
+        self.ent_interval.pack(fill=tk.X, padx=20)
+
+        # Buttons
+        btn_frame = tk.Frame(self.top)
+        btn_frame.pack(pady=30)
+        
+        tk.Button(btn_frame, text="Save Settings", bg="green", fg="white", width=15, command=self.save).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Cancel", width=10, command=self.top.destroy).pack(side=tk.LEFT, padx=10)
+
+    def browse_dir(self):
+        d = filedialog.askdirectory(initialdir=self.selected_dir)
+        if d:
+            self.selected_dir = d
+            self.lbl_dir.config(text=d)
+
+    def save(self):
+        name = self.ent_name.get().strip()
+        if not name:
+            messagebox.showerror("Error", "File name cannot be empty.", parent=self.top)
+            return
+            
+        try:
+            interval = float(self.ent_interval.get())
+            if interval <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "Interval must be a positive number.", parent=self.top)
+            return
+        self.on_save(self.selected_dir, name, interval)
+        self.top.destroy()
+
 class BaseAPGUI:
     def __init__(self, root):
         self.root = root
@@ -377,8 +451,19 @@ class BaseAPGUI:
         self.device_mgr = DeviceManager()
         self.motor_mgr = MotorValveController() # Second serial port controller
         self.target_voltage = 0.0 # Tracks the state for Port 5 (Omega)
+        
+        # Threading synchronization
+        self.serial_lock = threading.Lock()
+        self.data_queue = queue.Queue()
         self.polling_active = False
         self.pressure_profile = [] # Stores the pressure recipe
+        self.pressure_control_active = False
+        
+        # Save Settings Defaults
+        self.save_dir = os.path.join(os.path.expanduser("~"), "Documents")
+        self.base_filename = "PressData"
+        self.save_interval_min = 5.0
+        self.last_file_save_time = 0.0
         
         # Power Control State
         self.power_control_active = False
@@ -416,6 +501,7 @@ class BaseAPGUI:
         buttons = [
             ("Start Process", "#80FF80", self.start_process),
             ("Stop Process", None, self.stop_process),
+            ("Save Settings", "#FFFFE0", self.open_save_settings),
             ("System Controls", "#ADD8E6", self.open_system_controls),
             ("Error Display", None, self.on_click)
         ]
@@ -525,6 +611,13 @@ class BaseAPGUI:
         # Developer Mode
         tk.Button(bottom_frame, text="Dev Mode", bg="orange", command=self.open_developer_mode).pack(side=tk.RIGHT, anchor=tk.S, padx=10, pady=10)
 
+    def adjust_voltage(self, delta):
+        """Manually adjusts the target voltage."""
+        self.target_voltage += delta
+        self.target_voltage = max(0.0, min(10.0, self.target_voltage))
+        with self.serial_lock:
+            self.device_mgr.set_omega_voltage(self.target_voltage)
+
     def set_view(self, view_name):
         self.current_view = view_name
         self.draw_graph()
@@ -591,10 +684,30 @@ class BaseAPGUI:
         self.data_history = {"Temperature": [], "Pressure": [], "Wattage": []}
         self.start_time = time.time()
         self.recording_active = True
-        print("Process Started: Recording Data.")
 
+        # Activate Pressure Control if profile exists
+        if self.pressure_profile:
+            self.pressure_control_active = True
+            print(f"Pressure Control Started: {len(self.pressure_profile)} segments.")
+        else:
+            self.pressure_control_active = False
+        
+        # Generate Filename
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.csv_filename = os.path.join(self.save_dir, f"{timestamp}_{self.base_filename}.csv")
+        print(f"Process Started: Recording Data to {self.csv_filename}")
+        self.last_file_save_time = 0.0 # Force immediate save on first loop
+
+        # Write Header
+        try:
+            with open(self.csv_filename, "w") as f:
+                f.write("Timestamp,Temperature,Pressure,Voltage,Current,Power,Resistance\n")
+        except Exception as e:
+            print(f"Error creating file: {e}")
+            
     def stop_process(self):
         """Stops recording data."""
+        self.pressure_control_active = False
         self.recording_active = False
         print("Process Stopped.")
 
@@ -634,39 +747,69 @@ class BaseAPGUI:
 
         # Start the polling loop, which will now work in either real or simulated mode
         self.polling_active = True
-        self.poll_devices()
+        # Start background thread for data acquisition
+        self.poll_thread = threading.Thread(target=self.data_acquisition_loop, daemon=True)
+        self.poll_thread.start()
+        # Start UI update loop
+        self.update_gui_loop()
 
-    def poll_devices(self):
-        """Periodically reads data from all ports and updates the GUI."""
-        if not self.polling_active:
-            return
+    def data_acquisition_loop(self):
+        """Background thread to handle blocking serial I/O."""
+        while self.polling_active:
+            data_snapshot = {}
+            port_mapping = [1, 2, 3, 4, 5]
+            
+            # Read all ports
+            for port in port_mapping:
+                val_str = "---"
+                with self.serial_lock:
+                    if port == 5:
+                        # Omega Device
+                        resp = self.device_mgr.send_omega_cmd("$1RD")
+                        if resp and len(resp) >= 3:
+                            val_str = resp[2:]
+                    else:
+                        # Texmate Devices
+                        resp = self.device_mgr.send_texmate_cmd(port, "SR")
+                        if resp:
+                            val_str = resp
+                
+                data_snapshot[port] = val_str
+                # Small delay to ensure Mux is ready for next command
+                time.sleep(0.05)
 
-        # Map GUI readout columns to Device Ports
-        # 0: Temp Type (Port 1), 1: Pressure (Port 2), 2: Voltage (Port 3), etc.
-        # Adjust mapping as per actual hardware setup
-        port_mapping = [1, 2, 3, 4, 5] 
-        
+            # Handle Power Control Write (if active)
+            if self.power_control_active:
+                with self.serial_lock:
+                    self.device_mgr.set_omega_voltage(self.target_voltage)
+
+            # Send data to UI
+            self.data_queue.put(data_snapshot)
+            
+            # Loop delay
+            time.sleep(0.1)
+
+    def update_gui_loop(self):
+        """Reads from queue and updates UI on the main thread."""
         # Variables for Power Control
         meas_volts = 0.0
         meas_amps = 0.0
         meas_temp = 0.0
         meas_press = 0.0
-
-        for i, port in enumerate(port_mapping):
-            if i < len(self.readout_labels):
-                val_str = "---"
-                if port == 5:
-                    # Omega Device
-                    resp = self.device_mgr.send_omega_cmd("$1RD")
-                    if resp and len(resp) >= 3:
-                        val_str = resp[2:] # Strip prefix if needed
-                else:
-                    # Texmate Devices
-                    resp = self.device_mgr.send_texmate_cmd(port, "SR")
-                    if resp:
-                        val_str = resp # Raw response or parse it
+        
+        # Drain queue to get latest data
+        latest_data = None
+        while not self.data_queue.empty():
+            latest_data = self.data_queue.get()
+            
+        if latest_data:
+            port_mapping = [1, 2, 3, 4, 5]
+            for i, port in enumerate(port_mapping):
+                val_str = latest_data.get(port, "---")
                 
-                self.readout_labels[i].config(text=val_str)
+                # Update labels (except Resistance at index 4, which is calculated)
+                if i != 4:
+                    self.readout_labels[i].config(text=val_str)
                 
                 # Parse values for control loop (Port 3=Volts, Port 4=Amps)
                 try:
@@ -679,13 +822,39 @@ class BaseAPGUI:
                     if port == 4: meas_amps = val
                 except ValueError:
                     pass
-            
-            # Small delay to ensure Mux is ready for next command
-            time.sleep(0.05)
-
-
+        
         # Calculate Power
         current_power = meas_volts * meas_amps
+
+        # Calculate Resistance (R = V / I)
+        meas_res = 0.0
+        if abs(meas_amps) > 0.0001:
+            meas_res = meas_volts / meas_amps
+        self.readout_labels[4].config(text=f"{meas_res:.4f}")
+
+        # Pressure Control Loop (Profile Execution)
+        if self.pressure_control_active and self.pressure_profile:
+            # Calculate elapsed time in hours
+            elapsed_hours = (time.time() - self.start_time) / 3600.0
+            
+            target_pressure = 0.0
+            accumulated_time = 0.0
+            active_segment = None
+            
+            for segment in self.pressure_profile:
+                duration = segment['duration']
+                if elapsed_hours < (accumulated_time + duration):
+                    # We are in this segment
+                    time_in_seg = elapsed_hours - accumulated_time
+                    # Linear interpolation: Start + (Rate * Time)
+                    target_pressure = segment['start'] + (segment['rate'] * time_in_seg)
+                    active_segment = segment
+                    break
+                accumulated_time += duration
+            
+            if active_segment is None:
+                print("Pressure Profile Completed.")
+                self.pressure_control_active = False
         
         if self.recording_active:
             # Update History
@@ -698,6 +867,17 @@ class BaseAPGUI:
             for key in self.data_history:
                 if len(self.data_history[key]) > 3600:
                     self.data_history[key].pop(0)
+            
+            # Write to File (Check Interval)
+            if (time.time() - self.last_file_save_time) >= (self.save_interval_min * 60):
+                try:
+                    with open(self.csv_filename, "a") as f:
+                        line = f"{timestamp:.2f},{meas_temp:.2f},{meas_press:.2f},{meas_volts:.2f},{meas_amps:.2f},{current_power:.2f},{meas_res:.4f}\n"
+                        f.write(line)
+                    self.last_file_save_time = time.time()
+                    print(f"Data saved to file (Interval: {self.save_interval_min}m)")
+                except Exception as e:
+                    print(f"File Write Error: {e}")
             
             # Refresh Graph
             self.draw_graph()
@@ -721,19 +901,28 @@ class BaseAPGUI:
             # Clamp to safe limits (0-10V)
             self.target_voltage = max(0.0, min(10.0, self.target_voltage))
             
-            # Send to Omega
-            self.device_mgr.set_omega_voltage(self.target_voltage)
+            # Note: The background thread handles the actual writing of self.target_voltage
 
-        # Schedule next poll (e.g., every 500ms)
-        self.root.after(500, self.poll_devices)
+        # Schedule next update
+        if self.polling_active:
+            self.root.after(100, self.update_gui_loop)
 
     def update_voltage_state(self, new_voltage):
         """Callback to update target voltage from Manual Control Dialog."""
         self.target_voltage = new_voltage
 
+    def open_save_settings(self):
+        """Opens the Save Settings Dialog."""
+        SaveSettingsDialog(self.root, self.save_dir, self.base_filename, self.save_interval_min, self.save_settings_callback)
+
+    def save_settings_callback(self, new_dir, new_name, new_interval):
+        self.save_dir = new_dir
+        self.base_filename = new_name
+        self.save_interval_min = new_interval
+
     def open_temp_config(self):
         """Opens the Thermocouple Configuration Dialog."""
-        ThermocoupleDialog(self.root, self.device_mgr)
+        ThermocoupleDialog(self.root, self.device_mgr, self.serial_lock)
 
     def open_pressure_config(self):
         """Opens the Pressure Profile Dialog."""
@@ -745,7 +934,7 @@ class BaseAPGUI:
 
     def open_zero_pressure(self):
         """Opens the Zero Pressure Dialog."""
-        ZeroPressureDialog(self.root, self.device_mgr)
+        ZeroPressureDialog(self.root, self.device_mgr, self.serial_lock)
 
     def open_power_control(self):
         """Opens the Power Control Dialog."""
@@ -758,7 +947,7 @@ class BaseAPGUI:
 
     def open_system_controls(self):
         """Opens the System Controls Dialog."""
-        SystemControlsDialog(self.root, self.device_mgr, self.motor_mgr)
+        SystemControlsDialog(self.root, self.device_mgr, self.motor_mgr, self.serial_lock)
 
     def open_developer_mode(self):
         """Opens the debug window and sets log callbacks."""

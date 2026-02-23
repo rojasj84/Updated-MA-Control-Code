@@ -28,7 +28,7 @@ class DeviceManager:
             if found_port:
                 self.port = found_port
             elif platform.system() == "Windows":
-                self.port = 'COM6' # A common default for USB-to-Serial on Windows
+                self.port = 'COM1' # A common default for USB-to-Serial on Windows
             else:
                 self.port = '/dev/ttyUSB0' # Default for Linux
         else:
@@ -346,7 +346,7 @@ class MotorValveController:
         """
         if port is None:
             if platform.system() == "Windows":
-                self.port = 'COM7'
+                self.port = 'COM2'
             else:
                 self.port = '/dev/ttyUSB1'
         else:

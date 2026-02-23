@@ -1,17 +1,38 @@
 import serial
+import serial.tools.list_ports
 import time
+import platform
 
 class DeviceManager:
-    def __init__(self, port='/dev/ttyUSB0', baudrate=9600, timeout=0.5):
+    def __init__(self, port=None, baudrate=9600, timeout=0.5):
         """
         Initialize the DeviceManager for communicating with Texmate and Omega devices.
         
         Args:
-            port (str): Serial port path (e.g., '/dev/ttyUSB0' or 'COM1').
+            port (str): Serial port path (e.g., '/dev/ttyUSB0' or 'COM3'). If None, a platform-specific default is used.
             baudrate (int): Baud rate (default 9600).
             timeout (float): Read timeout in seconds.
         """
-        self.port = port
+        if port is None:
+            # Attempt to auto-detect "PORTMUX" device
+            found_port = None
+            try:
+                for p in serial.tools.list_ports.comports():
+                    if "PORTMUX" in (p.description or "").upper():
+                        found_port = p.device
+                        print(f"Auto-detected PORTMUX on {found_port}")
+                        break
+            except:
+                pass
+
+            if found_port:
+                self.port = found_port
+            elif platform.system() == "Windows":
+                self.port = 'COM6' # A common default for USB-to-Serial on Windows
+            else:
+                self.port = '/dev/ttyUSB0' # Default for Linux
+        else:
+            self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.ser = None
@@ -49,6 +70,9 @@ class DeviceManager:
             return True
         except serial.SerialException as e:
             print(f"Error opening serial port {self.port}: {e}")
+            print("Available ports:")
+            for p in serial.tools.list_ports.comports():
+                print(f"  {p.device} - {p.description}")
             return False
 
     def close(self):
@@ -71,9 +95,8 @@ class DeviceManager:
         try:
             self.ser.reset_input_buffer()
             self.ser.write(data)
-            time.sleep(0.1) # Wait for device processing
-            
-            response = self.ser.read_all()
+            # Use read_until to wait for the device to respond (respects timeout)
+            response = self.ser.read_until(b'\r')
             return response.decode('ascii', errors='ignore').strip()
         except Exception as e:
             print(f"Serial communication error: {e}")
@@ -315,24 +338,19 @@ class DeviceManager:
         
         return status
 
-if __name__ == "__main__":
-    # Simple test routine
-    mgr = DeviceManager()
-    if mgr.open():
-        print("Port opened.")
-        print("Scanning ports...")
-        print(mgr.scan_ports())
-        mgr.close()
-    else:
-        print("Could not open port.")
-
 class MotorValveController:
-    def __init__(self, port='/dev/ttyUSB1', baudrate=9600, timeout=0.5):
+    def __init__(self, port=None, baudrate=9600, timeout=0.5):
         """
         Controller for the Motor and Valve hardware (PurgeAP10).
         Uses a separate serial port from the meters.
         """
-        self.port = port
+        if port is None:
+            if platform.system() == "Windows":
+                self.port = 'COM7'
+            else:
+                self.port = '/dev/ttyUSB1'
+        else:
+            self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.ser = None
@@ -351,6 +369,9 @@ class MotorValveController:
             return True
         except Exception as e:
             print(f"Error opening motor port {self.port}: {e}")
+            print("Available ports:")
+            for p in serial.tools.list_ports.comports():
+                print(f"  {p.device} - {p.description}")
             return False
 
     def close(self):
@@ -363,7 +384,7 @@ class MotorValveController:
         
         if self.log_callback:
             self.log_callback(f"MV_TX: {full_cmd.strip()}")
-            
+
         if self.simulated:
             return True
 
@@ -384,3 +405,14 @@ class MotorValveController:
         # AM-600;BM-600 -> Move motors
         cmd = "AA0;BA0;AM-600;BM-600"
         return self.send_command(cmd)
+
+if __name__ == "__main__":
+    # Simple test routine
+    mgr = DeviceManager()
+    if mgr.open():
+        print("Port opened.")
+        print("Scanning ports...")
+        print(mgr.scan_ports())
+        mgr.close()
+    else:
+        print("Could not open port.")

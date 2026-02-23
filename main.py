@@ -599,23 +599,34 @@ class BaseAPGUI:
         print("Process Stopped.")
 
     def connect_hardware(self):
-        """Opens the serial port and starts the polling loop."""
+        """Opens serial ports or enables simulation mode if they fail."""
+        in_simulation_mode = False
+
+        # Attempt to open device manager port
         if self.device_mgr.open():
-            print("Serial port opened successfully.")
-            
+            print("Device manager port opened successfully.")
             # Initialize meters based on ModuleAP10.bas
             self.device_mgr.initialize_texmate_meters()
-            
-            self.polling_active = True
-            self.poll_devices()
         else:
-            print("Failed to open serial port. Running in offline mode.")
+            print("Failed to open device manager port. Enabling simulation for devices.")
+            self.device_mgr.enable_simulation()
+            in_simulation_mode = True
             
         # Attempt to open motor port as well
         if self.motor_mgr.open():
-            print("Motor/Valve port opened.")
+            print("Motor/Valve port opened successfully.")
         else:
-            print("Failed to open Motor/Valve port.")
+            print("Failed to open Motor/Valve port. Enabling simulation for motors.")
+            self.motor_mgr.enable_simulation()
+            in_simulation_mode = True
+
+        # If any port failed, open the developer console to show simulated traffic
+        if in_simulation_mode:
+            self.open_developer_mode()
+
+        # Start the polling loop, which will now work in either real or simulated mode
+        self.polling_active = True
+        self.poll_devices()
 
     def poll_devices(self):
         """Periodically reads data from all ports and updates the GUI."""
@@ -660,6 +671,10 @@ class BaseAPGUI:
                     if port == 4: meas_amps = val
                 except ValueError:
                     pass
+            
+            # Small delay to ensure Mux is ready for next command
+            time.sleep(0.05)
+
 
         # Calculate Power
         current_power = meas_volts * meas_amps
@@ -738,7 +753,7 @@ class BaseAPGUI:
         SystemControlsDialog(self.root, self.device_mgr, self.motor_mgr)
 
     def open_developer_mode(self):
-        """Opens the debug window and enables simulation if needed."""
+        """Opens the debug window and sets log callbacks."""
         if not hasattr(self, 'debug_win') or not self.debug_win.window.winfo_exists():
             self.debug_win = DebugWindow(self.root)
             
@@ -752,13 +767,9 @@ class BaseAPGUI:
             self.motor_mgr.set_log_callback(self.debug_win.log)
             self.debug_win.log("Developer Mode Enabled.")
 
-        # If hardware connection failed, force simulation and start polling
-        if not self.polling_active:
-            self.debug_win.log("Port closed. Enabling Simulation Mode...")
-            self.device_mgr.enable_simulation()
-            self.motor_mgr.enable_simulation()
-            self.polling_active = True
-            self.poll_devices()
+            # If already in simulation, add a note to the log.
+            if self.device_mgr.simulated or self.motor_mgr.simulated:
+                self.debug_win.log("NOTE: Running in Simulation Mode due to port connection failure on startup.")
 
     def cleanup_and_exit(self):
         self.polling_active = False

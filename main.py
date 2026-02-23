@@ -611,14 +611,22 @@ class BaseAPGUI:
             print("Failed to open device manager port. Enabling simulation for devices.")
             self.device_mgr.enable_simulation()
             in_simulation_mode = True
+        
+        # print("DAX connection disabled. Enabling simulation for devices.")
+        # self.device_mgr.enable_simulation()
+        # in_simulation_mode = True
             
         # Attempt to open motor port as well
-        if self.motor_mgr.open():
-            print("Motor/Valve port opened successfully.")
-        else:
-            print("Failed to open Motor/Valve port. Enabling simulation for motors.")
-            self.motor_mgr.enable_simulation()
-            in_simulation_mode = True
+        # if self.motor_mgr.open():
+        #     print("Motor/Valve port opened successfully.")
+        # else:
+        #     print("Failed to open Motor/Valve port. Enabling simulation for motors.")
+        #     self.motor_mgr.enable_simulation()
+        #     in_simulation_mode = True
+        
+        print("DAX (Motor/Valve) connection disabled. Enabling simulation for motors.")
+        self.motor_mgr.enable_simulation()
+        in_simulation_mode = True
 
         # If any port failed, open the developer console to show simulated traffic
         if in_simulation_mode:

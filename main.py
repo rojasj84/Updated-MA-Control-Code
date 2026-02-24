@@ -520,9 +520,9 @@ class BaseAPGUI:
         
         buttons = [
             ("Start Process", "#80FF80", self.start_process),
-            ("Stop Process", None, self.stop_process),
-            ("Save Settings", "#FFFFE0", self.open_save_settings),
-            ("System Controls", "#ADD8E6", self.open_system_controls),
+            ("Stop Process", "#FF8080", self.stop_process),
+            ("Save Settings", None, self.open_save_settings),
+            ("System Controls", None, self.open_system_controls),
             ("Thermocouple Settings", None, self.open_temp_config),
             ("Error Display", None, self.on_click)
         ]
@@ -579,31 +579,31 @@ class BaseAPGUI:
         auto_frame.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 10))
         
         # Row 1: Temperature
-        tk.Button(auto_frame, text="Input Temperature Profile", command=self.open_temp_profile).grid(row=0, column=0, padx=5, pady=2, sticky="ew")
+        tk.Button(auto_frame, text="Input Temperature Profile", command=self.open_temp_profile).grid(row=0, column=0, padx=5, pady=2, sticky="nsew", ipadx=10)
         
         self.var_auto_temp = tk.BooleanVar(value=False)
         self.chk_auto_temp = tk.Checkbutton(auto_frame, text="Automatic Temperature Control", 
                                             variable=self.var_auto_temp, indicatoron=0, 
                                             command=self.toggle_temp_control_check)
-        self.chk_auto_temp.grid(row=0, column=1, padx=5, pady=2, sticky="ew")
+        self.chk_auto_temp.grid(row=0, column=1, padx=5, pady=2, sticky="nsew", ipadx=10)
 
         # Row 2: Pressure
-        tk.Button(auto_frame, text="Input Pressure Profile", command=self.open_pressure_config).grid(row=1, column=0, padx=5, pady=2, sticky="ew")
+        tk.Button(auto_frame, text="Input Pressure Profile", command=self.open_pressure_config).grid(row=1, column=0, padx=5, pady=2, sticky="nsew", ipadx=10)
         
         self.var_auto_press = tk.BooleanVar(value=False)
         self.chk_auto_press = tk.Checkbutton(auto_frame, text="Automatic Pressure Control", 
                                              variable=self.var_auto_press, indicatoron=0, 
                                              command=self.toggle_press_control_check)
-        self.chk_auto_press.grid(row=1, column=1, padx=5, pady=2, sticky="ew")
+        self.chk_auto_press.grid(row=1, column=1, padx=5, pady=2, sticky="nsew", ipadx=10)
 
         # Row 3: Power
-        tk.Button(auto_frame, text="Input Power Profile", command=self.open_power_profile).grid(row=2, column=0, padx=5, pady=2, sticky="ew")
+        tk.Button(auto_frame, text="Input Power Profile", command=self.open_power_profile).grid(row=2, column=0, padx=5, pady=2, sticky="nsew", ipadx=10)
         
         self.var_auto_power = tk.BooleanVar(value=False)
         self.chk_auto_power = tk.Checkbutton(auto_frame, text="Automatic Power Control", 
                                              variable=self.var_auto_power, indicatoron=0, 
                                              command=self.toggle_power_control_check)
-        self.chk_auto_power.grid(row=2, column=1, padx=5, pady=2, sticky="ew")
+        self.chk_auto_power.grid(row=2, column=1, padx=5, pady=2, sticky="nsew", ipadx=10)
 
         # Column 3: Manual Voltage Control
         col3 = ttk.LabelFrame(bottom_frame, text="Manual Voltage Control")

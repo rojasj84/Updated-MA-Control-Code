@@ -470,11 +470,13 @@ class BaseAPGUI:
         self.power_profile = []
         self.pressure_control_active = False
         
+        self.manual_voltage_active = False
         # Save Settings Defaults
         self.save_dir = os.path.join(os.path.expanduser("~"), "Documents")
         self.base_filename = "PressData"
-        self.save_interval_min = 5.0
+        self.save_interval_min = 1.0
         self.last_file_save_time = 0.0
+        self.last_display_update_time = 0.0
         
         # Power Control State
         self.power_control_active = False
@@ -484,7 +486,7 @@ class BaseAPGUI:
         
         # Graphing State
         self.current_view = "Temperature"
-        self.data_history = {"Temperature": [], "Pressure": [], "Wattage": []}
+        self.data_history = {"Temperature": [], "Pressure": [], "Power": []}
         self.start_time = time.time()
         self.recording_active = False
 
@@ -543,7 +545,7 @@ class BaseAPGUI:
         
         tk.Button(rescale_frame, text="Temperature", bg="#8080FF", height=1, command=lambda: self.set_view("Temperature")).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
         tk.Button(rescale_frame, text="Pressure", bg="#00FF00", height=1, command=lambda: self.set_view("Pressure")).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
-        tk.Button(rescale_frame, text="Wattage", bg="#8080FF", height=1, command=lambda: self.set_view("Wattage")).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+        tk.Button(rescale_frame, text="Power", bg="#8080FF", height=1, command=lambda: self.set_view("Power")).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
 
         # Graph Area
         self.graph_canvas = tk.Canvas(graph_container, bg="white", height=400, width=600, highlightthickness=1, highlightbackground="black")
@@ -605,11 +607,20 @@ class BaseAPGUI:
                                              command=self.toggle_power_control_check)
         self.chk_auto_power.grid(row=2, column=1, padx=5, pady=2, sticky="nsew", ipadx=10)
 
-        # Column 3: Manual Voltage Control
-        col3 = ttk.LabelFrame(bottom_frame, text="Manual Voltage Control")
+        # Column 3: Manual Output Control
+        col3 = ttk.LabelFrame(bottom_frame, text="Manual Output Control")
         col3.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 10))
         
-        tk.Button(col3, text="Start Manual Control", command=self.on_click).pack(fill=tk.X, padx=5, pady=2)
+        self.btn_manual_voltage = tk.Button(col3, text="Start Manual Control", command=self.toggle_manual_voltage)
+        self.btn_manual_voltage.pack(fill=tk.X, padx=5, pady=2)
+        
+        target_frame = ttk.Frame(col3)
+        target_frame.pack(fill=tk.X, pady=2, padx=5)
+        tk.Label(target_frame, text="Output:").pack(side=tk.LEFT)
+        self.ent_target_voltage = tk.Entry(target_frame, width=6)
+        self.ent_target_voltage.pack(side=tk.LEFT, padx=5)
+        self.ent_target_voltage.insert(0, "0.00")
+        tk.Button(target_frame, text="Set", command=self.set_manual_voltage_direct).pack(side=tk.LEFT)
         
         adj_frame = ttk.Frame(col3)
         adj_frame.pack(fill=tk.X, pady=2)
@@ -654,7 +665,23 @@ class BaseAPGUI:
         # Developer Mode
         tk.Button(bottom_frame, text="Dev Mode", bg="orange", command=self.open_developer_mode).pack(side=tk.RIGHT, anchor=tk.S, padx=10, pady=10)
 
+    def toggle_manual_voltage(self):
+        self.manual_voltage_active = not self.manual_voltage_active
+        if self.manual_voltage_active:
+            self.btn_manual_voltage.config(text="Stop Manual Control", bg="red", fg="white")
+            # Disable conflicting auto controls
+            if self.power_control_active:
+                self.var_auto_power.set(False)
+                self.power_control_active = False
+                print("Auto Power Control disabled for Manual Output Control.")
+        else:
+            self.btn_manual_voltage.config(text="Start Manual Control", bg="SystemButtonFace", fg="black")
+
     def manual_step_voltage(self, sign):
+        if not self.manual_voltage_active:
+            messagebox.showwarning("Manual Control", "Please start Manual Control first.")
+            return
+            
         try:
             step = float(self.ent_manual_inc.get())
         except ValueError:
@@ -662,10 +689,30 @@ class BaseAPGUI:
         
         self.adjust_voltage(sign * step)
 
+    def set_manual_voltage_direct(self):
+        if not self.manual_voltage_active:
+            messagebox.showwarning("Manual Control", "Please start Manual Control first.")
+            return
+        try:
+            val = float(self.ent_target_voltage.get())
+            self.target_voltage = max(0.0, min(10.0, val))
+            # Refresh entry in case it was clamped
+            self.ent_target_voltage.delete(0, tk.END)
+            self.ent_target_voltage.insert(0, f"{self.target_voltage:.2f}")
+            
+            with self.serial_lock:
+                self.device_mgr.set_omega_voltage(self.target_voltage)
+        except ValueError:
+            messagebox.showerror("Error", "Invalid voltage value.")
+
     def adjust_voltage(self, delta):
         """Manually adjusts the target voltage."""
         self.target_voltage += delta
         self.target_voltage = max(0.0, min(10.0, self.target_voltage))
+        
+        self.ent_target_voltage.delete(0, tk.END)
+        self.ent_target_voltage.insert(0, f"{self.target_voltage:.2f}")
+        
         with self.serial_lock:
             self.device_mgr.set_omega_voltage(self.target_voltage)
 
@@ -762,7 +809,7 @@ class BaseAPGUI:
 
     def start_process(self):
         """Starts recording data and plotting."""
-        self.data_history = {"Temperature": [], "Pressure": [], "Wattage": []}
+        self.data_history = {"Temperature": [], "Pressure": [], "Power": []}
         self.start_time = time.time()
         self.recording_active = True
 
@@ -794,6 +841,7 @@ class BaseAPGUI:
         self.csv_filename = os.path.join(self.save_dir, f"{timestamp}_{self.base_filename}.csv")
         print(f"Process Started: Recording Data to {self.csv_filename}")
         self.last_file_save_time = 0.0 # Force immediate save on first loop
+        self.last_display_update_time = 0.0 # Force immediate graph update
 
         # Write Header
         try:
@@ -905,6 +953,10 @@ class BaseAPGUI:
         while not self.data_queue.empty():
             latest_data = self.data_queue.get()
             
+        # Check if it's time for a slow update (every 60 seconds)
+        current_time = time.time()
+        do_slow_update = (current_time - self.last_display_update_time) >= 60.0
+
         if latest_data:
             port_mapping = [1, 2, 3, 4, 5]
             for i, port in enumerate(port_mapping):
@@ -925,7 +977,7 @@ class BaseAPGUI:
                     if port == 4: meas_amps = val
                 except ValueError:
                     pass
-        
+            
         # Calculate Power
         current_power = meas_volts * meas_amps
 
@@ -1001,16 +1053,17 @@ class BaseAPGUI:
             else:
                 self.target_power_watts = target_power
         
-        if self.recording_active:
+        if self.recording_active and do_slow_update:
+            self.last_display_update_time = current_time
             # Update History
             timestamp = time.time() - self.start_time
             self.data_history["Temperature"].append((timestamp, meas_temp))
             self.data_history["Pressure"].append((timestamp, meas_press))
-            self.data_history["Wattage"].append((timestamp, current_power))
+            self.data_history["Power"].append((timestamp, current_power))
             
-            # Keep history manageable (e.g., last 3600 points)
+            # Keep history manageable (e.g., last 600 points. At 1 min/point, this is 10 hours)
             for key in self.data_history:
-                if len(self.data_history[key]) > 3600:
+                if len(self.data_history[key]) > 600:
                     self.data_history[key].pop(0)
             
             # Write to File (Check Interval)
@@ -1074,7 +1127,7 @@ class BaseAPGUI:
         if self.power_control_active:
             states.append("Auto Power")
         elif self.target_voltage > 0.0:
-            states.append(f"Manual Voltage ({self.target_voltage:.2f}V)")
+            states.append(f"Manual Output ({self.target_voltage:.2f}V)")
             
         if self.temp_control_active:
             states.append("Auto Temp")

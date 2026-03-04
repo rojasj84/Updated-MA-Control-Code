@@ -10,7 +10,7 @@ import datetime
 from device_comm import DeviceManager, MotorValveController
 
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageTk, ImageDraw
     HAS_PILLOW = True
 except ImportError:
     HAS_PILLOW = False
@@ -458,15 +458,103 @@ class SaveSettingsDialog:
         self.on_save(self.selected_dir, name, interval)
         self.top.destroy()
 
+class ToggleSwitch(tk.Canvas):
+    """A modern toggle switch widget to replace standard checkboxes."""
+    def __init__(self, parent, text, variable, command=None, bg="#2b2b3b", active_color="#00ffff"):
+        super().__init__(parent, width=260, height=30, bg=bg, highlightthickness=0)
+        self.variable = variable
+        self.command = command
+        self.active_color = active_color
+        self.text = text
+        
+        self.bind("<Button-1>", self.toggle)
+        self.variable.trace_add("write", self.update_ui)
+        self.update_ui()
+
+    def toggle(self, event=None):
+        self.variable.set(not self.variable.get())
+        if self.command:
+            self.command()
+
+    def update_ui(self, *args):
+        self.delete("all")
+        state = self.variable.get()
+        
+        # Dimensions
+        h = 20
+        w = 40
+        x = 200 # Switch position (right aligned, moved right for more text space)
+        y = 5
+        
+        # Draw Text
+        self.create_text(5, 15, text=self.text, fill="white", anchor="w", font=("Arial", 10))
+        
+        if HAS_PILLOW:
+            # Supersampling for smooth edges
+            scale = 4
+            img_w = int(w * scale)
+            img_h = int(h * scale)
+            
+            # Create transparent image
+            image = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            
+            color = self.active_color if state else "#555566"
+            
+            # Draw Track (Pill shape)
+            draw.ellipse((0, 0, h*scale, h*scale), fill=color)
+            draw.ellipse(((w-h)*scale, 0, w*scale, h*scale), fill=color)
+            draw.rectangle(((h/2)*scale, 0, (w-h/2)*scale, h*scale), fill=color)
+            
+            # Draw Handle
+            pad = 2 * scale
+            r = (h * scale) // 2 - pad
+            cy = (h * scale) // 2
+            cx = (w * scale) - (h * scale) // 2 if state else (h * scale) // 2
+                
+            draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill="white")
+            
+            # Resize down with high quality resampling
+            resample_method = Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS
+            image = image.resize((w, h), resample_method)
+            
+            self.tk_image = ImageTk.PhotoImage(image)
+            self.create_image(x, y, image=self.tk_image, anchor="nw")
+        else:
+            # Fallback to standard canvas drawing
+            color = self.active_color if state else "#555566"
+            self.create_oval(x, y, x+h, y+h, fill=color, outline="")
+            self.create_oval(x+w-h, y, x+w, y+h, fill=color, outline="")
+            self.create_rectangle(x+h/2, y, x+w-h/2, y+h, fill=color, outline="")
+            
+            r = h/2 - 2
+            cx = x+w-h/2 if state else x+h/2
+            cy = y+h/2
+            self.create_oval(cx-r, cy-r, cx+r, cy+r, fill="white", outline="")
+
 class BaseAPGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("EPL MAP Control")
         self.root.configure(bg="#F0F0F0")
         
+        # --- Theme Colors ---
+        self.colors = {
+            "bg": "#1e1e2e",        # Main Background (Dark Navy)
+            "card": "#2b2b3b",      # Card Background (Lighter Navy)
+            "text": "#ffffff",      # Primary Text
+            "subtext": "#b0b0b0",   # Secondary Text
+            "accent": "#00ffff",    # Cyan Highlight
+            "success": "#4caf50",   # Green
+            "danger": "#f44336",    # Red
+            "btn_bg": "#3e3e4e"     # Button Background
+        }
+
         self.device_mgr = DeviceManager()
         self.motor_mgr = MotorValveController() # Second serial port controller
         self.target_voltage = 0.0 # Tracks the state for Port 5 (Omega)
+        
+        self.view_mode = "ALL" # "ALL" or "SINGLE"
         
         # Threading synchronization
         self.serial_lock = threading.Lock()
@@ -497,9 +585,9 @@ class BaseAPGUI:
         self.start_time = time.time()
         self.recording_active = False
 
-        # Use a main frame for padding and layout
-        self.main_frame = ttk.Frame(root, padding="10")
-        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        # Configure Root
+        self.root.configure(bg=self.colors["bg"])
+        self.root.geometry("1280x800")
 
         self.create_widgets()
         
@@ -507,15 +595,25 @@ class BaseAPGUI:
         self.root.after(200, self.connect_hardware)
 
     def create_widgets(self):
-        # --- Header (Logo + Title) ---
-        header_frame = tk.Frame(self.main_frame, bg="white")
-        header_frame.pack(fill=tk.X, pady=(0, 10))
+        # --- Main Layout Containers ---
+        # Sidebar (Left)
+        self.sidebar = tk.Frame(self.root, bg=self.colors["card"], width=250)
+        self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
+        self.sidebar.pack_propagate(False) # Enforce width
+
+        # Main Content (Right)
+        self.main_content = tk.Frame(self.root, bg=self.colors["bg"])
+        self.main_content.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=20, pady=20)
+
+        # --- Sidebar Content ---
+        # Logo Area (White box for visibility of black logo)
+        logo_frame = tk.Frame(self.sidebar, bg="white", height=100)
+        logo_frame.pack(fill=tk.X, padx=0, pady=0)
 
         try:
             logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo_CarnegieScience_primary_black_RGB.png")
             if os.path.exists(logo_path):
                 if HAS_PILLOW:
-                    # Use Pillow for high-quality anti-aliased resizing
                     pil_img = Image.open(logo_path)
                     target_h = 80
                     ratio = target_h / pil_img.height
@@ -526,185 +624,175 @@ class BaseAPGUI:
                     self.logo_img = tk.PhotoImage(file=logo_path)
                     if self.logo_img.height() > 80:
                         self.logo_img = self.logo_img.subsample(self.logo_img.height() // 80)
-                tk.Label(header_frame, image=self.logo_img, bg="white").pack(side=tk.LEFT, padx=(10, 5), pady=5)
+                tk.Label(logo_frame, image=self.logo_img, bg="white").pack(pady=10)
         except Exception as e:
             print(f"Logo load error: {e}")
 
-        title_lbl = tk.Label(header_frame, text="EPL Multi Anvil Press Controls", font=("Trajan", 20, "bold"), bg="white", anchor="w", padx=10, pady=5)
-        title_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Sidebar Menu Label
+        tk.Label(self.sidebar, text="CONTROLS", bg=self.colors["card"], fg=self.colors["subtext"], font=("Arial", 10, "bold"), anchor="w").pack(fill=tk.X, padx=20, pady=(20, 10))
 
-        # --- System Status Bar ---
-        self.status_frame = tk.Frame(self.main_frame, bg="#e0e0e0", relief="sunken", bd=1)
-        self.status_frame.pack(fill=tk.X, pady=(0, 10), padx=5)
-        
-        tk.Label(self.status_frame, text="SYSTEM STATUS:", font=("Arial", 10, "bold"), bg="#e0e0e0", fg="#333").pack(side=tk.LEFT, padx=(10, 5), pady=5)
-        self.lbl_system_status = tk.Label(self.status_frame, text="STANDBY", font=("Arial", 10, "bold"), fg="red", bg="#e0e0e0")
-        self.lbl_system_status.pack(side=tk.LEFT, padx=5, pady=5)
-
-        # --- Top Section (Buttons + Graph + Rescale) ---
-        top_frame = ttk.Frame(self.main_frame)
-        top_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-
-        # Left Buttons (Process Control)
-        left_btn_frame = ttk.Frame(top_frame)
-        left_btn_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
-        
+        # Sidebar Buttons
         buttons = [
-            ("Start Process", "#80FF80", self.start_process),
-            ("Stop Process", "#FF8080", self.stop_process),
-            ("Save Settings", None, self.open_save_settings),
-            ("System Controls", None, self.open_system_controls),
-            ("Thermocouple Settings", None, self.open_temp_config),
-            ("Error Display", None, self.on_click)
+            ("START PROCESS", self.colors["success"], self.start_process),
+            ("STOP PROCESS", self.colors["danger"], self.stop_process),
+            ("Save Settings", self.colors["btn_bg"], self.open_save_settings),
+            ("System Controls", self.colors["btn_bg"], self.open_system_controls),
+            ("Thermocouple Config", self.colors["btn_bg"], self.open_temp_config),
+            ("Developer Mode", self.colors["btn_bg"], self.open_developer_mode),
+            ("EXIT", self.colors["btn_bg"], self.cleanup_and_exit)
         ]
-        
+
         for text, color, cmd in buttons:
-            btn = tk.Button(left_btn_frame, text=text, command=cmd)
-            if color:
-                btn.configure(bg=color)
-            btn.pack(fill=tk.X, pady=2)
+            btn = tk.Button(self.sidebar, text=text, bg=color, fg="white", font=("Arial", 11), relief="flat", padx=10, pady=8, command=cmd, cursor="hand2")
+            btn.pack(fill=tk.X, padx=15, pady=5)
 
-        # Graph Container (Right of buttons)
-        graph_container = ttk.Frame(top_frame)
-        graph_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        # Rescale Buttons (Top of Graph)
-        rescale_frame = ttk.Frame(graph_container)
-        rescale_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 2))
+        # --- Main Content Area ---
         
-        tk.Button(rescale_frame, text="Temperature", bg="#8080FF", height=1, command=lambda: self.set_view("Temperature")).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
-        tk.Button(rescale_frame, text="Pressure", bg="#00FF00", height=1, command=lambda: self.set_view("Pressure")).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
-        tk.Button(rescale_frame, text="Power", bg="#8080FF", height=1, command=lambda: self.set_view("Power")).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+        # Header Title
+        title_frame = tk.Frame(self.main_content, bg=self.colors["bg"])
+        title_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        tk.Label(title_frame, text="EPL Multi Anvil Press Controls", font=("Trajan", 24, "bold"), bg=self.colors["bg"], fg=self.colors["text"]).pack(side=tk.LEFT)
+        
+        # Status Indicator
+        self.lbl_system_status = tk.Label(title_frame, text="STANDBY", font=("Arial", 12, "bold"), bg=self.colors["bg"], fg=self.colors["danger"])
+        self.lbl_system_status.pack(side=tk.RIGHT, padx=10)
+        tk.Label(title_frame, text="STATUS:", font=("Arial", 10, "bold"), bg=self.colors["bg"], fg=self.colors["subtext"]).pack(side=tk.RIGHT)
 
-        # Graph Area
-        self.graph_canvas = tk.Canvas(graph_container, bg="white", height=400, width=600, highlightthickness=1, highlightbackground="black")
-        self.graph_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        self.graph_canvas.bind("<Configure>", self.draw_graph)
-
-        # --- Middle Section (Readouts) ---
-        readout_frame = ttk.LabelFrame(self.main_frame, text="Readouts")
-        readout_frame.pack(fill=tk.X, pady=10)
+        # --- Top Row: Readouts ---
+        readout_container = tk.Frame(self.main_content, bg=self.colors["bg"])
+        readout_container.pack(fill=tk.X, pady=(0, 20))
 
         headers = [
-            ("Temp Type", "red"), ("Pressure (Bars)", "green"), 
-            ("Voltage", "blue"), ("Current", "magenta"), ("Resistance", "black")
+            ("Temp Type", self.colors["accent"]), 
+            ("Pressure (Bars)", self.colors["success"]), 
+            ("Voltage", "#ff9800"), 
+            ("Current", "#e91e63"), 
+            ("Resistance", "#9c27b0")
         ]
         
         self.readout_labels = []
         for i, (text, color) in enumerate(headers):
-            lbl = tk.Label(readout_frame, text=text, fg=color, font=("Arial", 10, "bold"))
-            lbl.grid(row=0, column=i, padx=10, pady=5, sticky="ew")
+            card = tk.Frame(readout_container, bg=self.colors["card"], padx=15, pady=10)
+            card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0 if i==0 else 10, 0))
             
-            val = tk.Label(readout_frame, bg="white", relief="sunken", width=15)
-            val.grid(row=1, column=i, padx=10, pady=5)
+            tk.Label(card, text=text, fg=color, bg=self.colors["card"], font=("Arial", 10, "bold")).pack(anchor="w")
+            val = tk.Label(card, text="---", fg=self.colors["text"], bg=self.colors["card"], font=("Courier New", 20, "bold"))
+            val.pack(anchor="e", pady=(5, 0))
             self.readout_labels.append(val)
-            
-            readout_frame.columnconfigure(i, weight=1)
 
-        # --- Bottom Section (Controls) ---
-        bottom_frame = ttk.Frame(self.main_frame)
-        bottom_frame.pack(fill=tk.X)
+        # --- Middle Row: Graph ---
+        graph_card = tk.Frame(self.main_content, bg=self.colors["card"], padx=2, pady=2)
+        graph_card.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
 
-        # Automatic Control Group
-        auto_frame = ttk.LabelFrame(bottom_frame, text="Automatic Control")
-        auto_frame.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 10))
+        # Graph Controls
+        graph_ctrl_frame = tk.Frame(graph_card, bg=self.colors["card"])
+        graph_ctrl_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        # Row 1: Temperature
-        tk.Button(auto_frame, text="Input Temperature Profile", command=self.open_temp_profile).grid(row=0, column=0, padx=5, pady=2, sticky="nsew", ipadx=10)
+        tk.Label(graph_ctrl_frame, text="LIVE VISUALIZATION", fg=self.colors["subtext"], bg=self.colors["card"], font=("Arial", 10, "bold")).pack(side=tk.LEFT)
+        
+        tk.Button(graph_ctrl_frame, text="RESET VIEW", bg=self.colors["btn_bg"], fg="white", font=("Arial", 9), 
+                      command=self.set_all_view, relief="flat").pack(side=tk.RIGHT, padx=2)
+
+        # Canvas Container
+        self.graph_container = tk.Frame(graph_card, bg=self.colors["card"])
+        self.graph_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        self.canvases = {}
+        self.canvas_configs = {
+            "Temperature": {"color": self.colors["accent"]},
+            "Pressure": {"color": self.colors["success"]},
+            "Power": {"color": "#ff9800"}
+        }
+
+        for view in ["Temperature", "Pressure", "Power"]:
+            cv = tk.Canvas(self.graph_container, bg=self.colors["card"], highlightthickness=1, highlightbackground=self.colors["bg"])
+            cv.bind("<Button-1>", lambda event, v=view: self.toggle_maximize(v))
+            cv.bind("<Configure>", lambda event, v=view: self.draw_single_graph(v))
+            self.canvases[view] = cv
+        
+        self.update_graph_layout()
+
+        # --- Bottom Row: Controls ---
+        controls_container = tk.Frame(self.main_content, bg=self.colors["bg"])
+        controls_container.pack(fill=tk.X)
+
+        # Auto Control Card
+        auto_card = tk.Frame(controls_container, bg=self.colors["card"], padx=15, pady=15)
+        auto_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        tk.Label(auto_card, text="AUTOMATION PROFILES", fg=self.colors["accent"], bg=self.colors["card"], font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Grid for Auto Controls
+        auto_grid = tk.Frame(auto_card, bg=self.colors["card"])
+        auto_grid.pack(fill=tk.X)
+
+        # Helper for styled buttons
+        def style_btn(parent, text, cmd):
+            return tk.Button(parent, text=text, command=cmd, bg=self.colors["btn_bg"], fg="white", relief="flat")
+
+        def style_chk(parent, text, var, cmd, color):
+            return ToggleSwitch(parent, text=text, variable=var, command=cmd, bg=self.colors["card"], active_color=color)
+
+        # Temperature
+        style_btn(auto_grid, "Load Temp Profile", self.open_temp_profile).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         
         self.var_auto_temp = tk.BooleanVar(value=False)
-        self.chk_auto_temp = tk.Checkbutton(auto_frame, text="Automatic Temperature Control", 
-                                            variable=self.var_auto_temp, indicatoron=0, 
-                                            command=self.toggle_temp_control_check)
-        self.chk_auto_temp.grid(row=0, column=1, padx=5, pady=2, sticky="nsew", ipadx=10)
+        self.chk_auto_temp = style_chk(auto_grid, "Enable Auto Temp", self.var_auto_temp, self.toggle_temp_control_check, self.colors["accent"])
+        self.chk_auto_temp.grid(row=0, column=1, padx=5, pady=8, sticky="w")
 
-        # Row 2: Pressure
-        tk.Button(auto_frame, text="Input Pressure Profile", command=self.open_pressure_config).grid(row=1, column=0, padx=5, pady=2, sticky="nsew", ipadx=10)
+        # Pressure
+        style_btn(auto_grid, "Load Pressure Profile", self.open_pressure_config).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
         
         self.var_auto_press = tk.BooleanVar(value=False)
-        self.chk_auto_press = tk.Checkbutton(auto_frame, text="Automatic Pressure Control", 
-                                             variable=self.var_auto_press, indicatoron=0, 
-                                             command=self.toggle_press_control_check)
-        self.chk_auto_press.grid(row=1, column=1, padx=5, pady=2, sticky="nsew", ipadx=10)
+        self.chk_auto_press = style_chk(auto_grid, "Enable Auto Pressure", self.var_auto_press, self.toggle_press_control_check, self.colors["success"])
+        self.chk_auto_press.grid(row=1, column=1, padx=5, pady=8, sticky="w")
 
-        # Row 3: Power
-        tk.Button(auto_frame, text="Input Power Profile", command=self.open_power_profile).grid(row=2, column=0, padx=5, pady=2, sticky="nsew", ipadx=10)
+        # Power
+        style_btn(auto_grid, "Load Power Profile", self.open_power_profile).grid(row=2, column=0, padx=5, pady=5, sticky="ew")
         
         self.var_auto_power = tk.BooleanVar(value=False)
-        self.chk_auto_power = tk.Checkbutton(auto_frame, text="Automatic Power Control", 
-                                             variable=self.var_auto_power, indicatoron=0, 
-                                             command=self.toggle_power_control_check)
-        self.chk_auto_power.grid(row=2, column=1, padx=5, pady=2, sticky="nsew", ipadx=10)
+        self.chk_auto_power = style_chk(auto_grid, "Enable Auto Power", self.var_auto_power, self.toggle_power_control_check, "#ff9800")
+        self.chk_auto_power.grid(row=2, column=1, padx=5, pady=8, sticky="w")
 
-        # Column 3: Manual Output Control
-        col3 = ttk.LabelFrame(bottom_frame, text="Manual Output Control")
-        col3.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 10))
+        # Manual Control Card
+        manual_card = tk.Frame(controls_container, bg=self.colors["card"], padx=15, pady=15)
+        manual_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        self.btn_manual_voltage = tk.Button(col3, text="Start Manual Control", command=self.toggle_manual_voltage)
+        tk.Label(manual_card, text="MANUAL OVERRIDE", fg=self.colors["accent"], bg=self.colors["card"], font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 10))
+
+        self.btn_manual_voltage = tk.Button(manual_card, text="Start Manual Control", bg=self.colors["btn_bg"], fg="white", relief="flat", command=self.toggle_manual_voltage)
         self.btn_manual_voltage.pack(fill=tk.X, padx=5, pady=2)
         
-        target_frame = ttk.Frame(col3)
+        target_frame = tk.Frame(manual_card, bg=self.colors["card"])
         target_frame.pack(fill=tk.X, pady=2, padx=5)
-        tk.Label(target_frame, text="Output:").pack(side=tk.LEFT)
-        self.ent_target_voltage = tk.Entry(target_frame, width=6)
+        
+        tk.Label(target_frame, text="Output (V):", bg=self.colors["card"], fg="white").pack(side=tk.LEFT)
+        self.ent_target_voltage = tk.Entry(target_frame, width=6, bg=self.colors["bg"], fg="white", insertbackground="white", relief="flat")
         self.ent_target_voltage.pack(side=tk.LEFT, padx=5)
         self.ent_target_voltage.insert(0, "0.00")
-        tk.Button(target_frame, text="Set", command=self.set_manual_voltage_direct).pack(side=tk.LEFT)
+        tk.Button(target_frame, text="SET", bg=self.colors["accent"], fg="black", font=("Arial", 8, "bold"), relief="flat", command=self.set_manual_voltage_direct).pack(side=tk.LEFT)
         
-        adj_frame = ttk.Frame(col3)
+        adj_frame = tk.Frame(manual_card, bg=self.colors["card"])
         adj_frame.pack(fill=tk.X, pady=2)
         
-        tk.Button(adj_frame, text="Down", command=lambda: self.manual_step_voltage(-1)).pack(side=tk.LEFT, padx=5)
-        self.ent_manual_inc = tk.Entry(adj_frame, width=8)
+        tk.Button(adj_frame, text="-", width=3, bg=self.colors["btn_bg"], fg="white", relief="flat", command=lambda: self.manual_step_voltage(-1)).pack(side=tk.LEFT, padx=5)
+        self.ent_manual_inc = tk.Entry(adj_frame, width=5, bg=self.colors["bg"], fg="white", insertbackground="white", relief="flat", justify="center")
         self.ent_manual_inc.insert(0, "0.05")
         self.ent_manual_inc.pack(side=tk.LEFT, padx=5)
-        tk.Button(adj_frame, text="Up", command=lambda: self.manual_step_voltage(1)).pack(side=tk.LEFT, padx=5)
-
-        # Column 4: Valves & Motors
-        # col4 = ttk.LabelFrame(bottom_frame, text="Valve Controls")
-        # col4.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 10))
-        # 
-        # # Valves
-        # v_frame = ttk.Frame(col4)
-        # v_frame.pack(fill=tk.X, pady=2)
-        # tk.Button(v_frame, text="Up Valve", command=self.on_click).pack(side=tk.LEFT, padx=2)
-        # tk.Button(v_frame, text="Down Valve", command=self.on_click).pack(side=tk.LEFT, padx=2)
-
-        # Motors
-        # m_frame = ttk.Frame(col4)
-        # m_frame.pack(fill=tk.X, pady=2)
-        # 
-        # # U Motor
-        # u_frame = ttk.Frame(m_frame)
-        # u_frame.pack(side=tk.LEFT, padx=5)
-        # ttk.Label(u_frame, text="U Motor").pack()
-        # tk.Button(u_frame, text="+100", command=self.on_click).pack()
-        # tk.Button(u_frame, text="-100", command=self.on_click).pack()
-        # 
-        # # D Motor
-        # d_frame = ttk.Frame(m_frame)
-        # d_frame.pack(side=tk.LEFT, padx=5)
-        # ttk.Label(d_frame, text="D Motor").pack()
-        # tk.Button(d_frame, text="+100", command=self.on_click).pack()
-        # tk.Button(d_frame, text="-100", command=self.on_click).pack()
-
-        # Exit
-        tk.Button(bottom_frame, text="EXIT", bg="red", fg="white", command=self.cleanup_and_exit).pack(side=tk.RIGHT, anchor=tk.S, padx=10, pady=10)
-        
-        # Developer Mode
-        tk.Button(bottom_frame, text="Dev Mode", bg="orange", command=self.open_developer_mode).pack(side=tk.RIGHT, anchor=tk.S, padx=10, pady=10)
+        tk.Button(adj_frame, text="+", width=3, bg=self.colors["btn_bg"], fg="white", relief="flat", command=lambda: self.manual_step_voltage(1)).pack(side=tk.LEFT, padx=5)
 
     def toggle_manual_voltage(self):
         self.manual_voltage_active = not self.manual_voltage_active
         if self.manual_voltage_active:
-            self.btn_manual_voltage.config(text="Stop Manual Control", bg="red", fg="white")
+            self.btn_manual_voltage.config(text="STOP MANUAL CONTROL", bg=self.colors["danger"], fg="white")
             # Disable conflicting auto controls
             if self.power_control_active:
                 self.var_auto_power.set(False)
                 self.power_control_active = False
                 print("Auto Power Control disabled for Manual Output Control.")
         else:
-            self.btn_manual_voltage.config(text="Start Manual Control", bg="SystemButtonFace", fg="black")
+            self.btn_manual_voltage.config(text="Start Manual Control", bg=self.colors["btn_bg"], fg="white")
 
     def manual_step_voltage(self, sign):
         if not self.manual_voltage_active:
@@ -745,14 +833,44 @@ class BaseAPGUI:
         with self.serial_lock:
             self.device_mgr.set_omega_voltage(self.target_voltage)
 
-    def set_view(self, view_name):
-        self.current_view = view_name
-        self.draw_graph()
+    def set_all_view(self):
+        self.view_mode = "ALL"
+        self.update_graph_layout()
+        self.redraw_visible_graphs()
 
-    def draw_graph(self, event=None):
-        self.graph_canvas.delete("all")
-        w = self.graph_canvas.winfo_width()
-        h = self.graph_canvas.winfo_height()
+    def toggle_maximize(self, view_name):
+        if self.view_mode == "ALL":
+            self.view_mode = "SINGLE"
+            self.current_view = view_name
+        else:
+            self.view_mode = "ALL"
+        self.update_graph_layout()
+        self.redraw_visible_graphs()
+
+    def update_graph_layout(self):
+        for cv in self.canvases.values():
+            cv.pack_forget()
+            
+        if self.view_mode == "ALL":
+            for view in ["Temperature", "Pressure", "Power"]:
+                self.canvases[view].pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
+        else:
+            self.canvases[self.current_view].pack(fill=tk.BOTH, expand=True)
+
+    def redraw_visible_graphs(self):
+        if self.view_mode == "ALL":
+            for view in ["Temperature", "Pressure", "Power"]:
+                self.draw_single_graph(view)
+        else:
+            self.draw_single_graph(self.current_view)
+
+    def draw_single_graph(self, view_name, event=None):
+        canvas = self.canvases[view_name]
+        canvas.delete("all")
+        
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        if w < 10 or h < 10: return
         
         # Margins
         x_margin = 40
@@ -761,28 +879,28 @@ class BaseAPGUI:
         plot_h = h - y_margin - 40
         
         # Draw Title
-        self.graph_canvas.create_text(w/2, 20, text=f"{self.current_view} vs Time", font=("Arial", 12, "bold"), fill="black")
+        canvas.create_text(w/2, 20, text=f"{view_name} vs Time", font=("Arial", 12, "bold"), fill="white")
 
         # Draw Grid
         for i in range(1, 5):
             # Vertical
             x = i * (w / 5)
-            self.graph_canvas.create_line(x, 40, x, h-30, fill="#D0D0D0", dash=(2, 4))
+            canvas.create_line(x, 40, x, h-30, fill="#444455", dash=(2, 4))
 
             # Horizontal
             y = 40 + i * ((h-70) / 5)
-            self.graph_canvas.create_line(40, y, w-20, y, fill="#D0D0D0", dash=(2, 4))
+            canvas.create_line(40, y, w-20, y, fill="#444455", dash=(2, 4))
 
         # Draw Axes
-        self.graph_canvas.create_line(40, 40, 40, h-30, width=2) # Y Axis
-        self.graph_canvas.create_line(40, h-30, w-20, h-30, width=2) # X Axis
+        canvas.create_line(40, 40, 40, h-30, width=2, fill="white") # Y Axis
+        canvas.create_line(40, h-30, w-20, h-30, width=2, fill="white") # X Axis
         
         # Axis Labels
-        self.graph_canvas.create_text(w/2, h-10, text="Time (s)", font=("Arial", 10))
-        self.graph_canvas.create_text(15, h/2, text=self.current_view, angle=90, font=("Arial", 10))
+        canvas.create_text(w/2, h-10, text="Time (s)", font=("Arial", 10), fill="#b0b0b0")
+        canvas.create_text(15, h/2, text=view_name, angle=90, font=("Arial", 10), fill="#b0b0b0")
         
         # Plot Data
-        data = self.data_history.get(self.current_view, [])
+        data = self.data_history.get(view_name, [])
         if len(data) > 1:
             times = [p[0] for p in data]
             values = [p[1] for p in data]
@@ -801,7 +919,7 @@ class BaseAPGUI:
                 y = (h - y_margin) - (v - min_v) / (max_v - min_v) * plot_h
                 points.extend([x, y])
             
-            self.graph_canvas.create_line(points, fill="blue", width=2)
+            canvas.create_line(points, fill=self.canvas_configs[view_name]["color"], width=2)
 
     def on_click(self):
         print("Button clicked")
@@ -1107,7 +1225,7 @@ class BaseAPGUI:
                     print(f"File Write Error: {e}")
             
             # Refresh Graph
-            self.draw_graph()
+            self.redraw_visible_graphs()
         
         # Update Power Dialog if open
         if self.power_dialog and self.power_dialog.top.winfo_exists():
@@ -1145,28 +1263,28 @@ class BaseAPGUI:
     def update_system_status(self):
         """Updates the status bar text based on active flags."""
         if not self.recording_active:
-            self.lbl_system_status.config(text="STANDBY", fg="red")
+            self.lbl_system_status.config(text="STANDBY", fg=self.colors["danger"])
             return
 
         states = []
         
         if self.pressure_control_active:
-            states.append("Auto Pressure")
+            states.append("AUTO PRESS")
         
         if self.power_control_active:
-            states.append("Auto Power")
+            states.append("AUTO POWER")
         elif self.target_voltage > 0.0:
-            states.append(f"Manual Output ({self.target_voltage:.2f}V)")
+            states.append(f"MANUAL ({self.target_voltage:.2f}V)")
             
         if self.temp_control_active:
-            states.append("Auto Temp")
+            states.append("AUTO TEMP")
             
         if not states:
-            status_text = "Data Gathering"
-            color = "blue"
+            status_text = "MONITORING"
+            color = self.colors["accent"]
         else:
-            status_text = "Data Gathering | " + " | ".join(states)
-            color = "green"
+            status_text = " | ".join(states)
+            color = self.colors["success"]
             
         self.lbl_system_status.config(text=status_text, fg=color)
 

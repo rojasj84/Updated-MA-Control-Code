@@ -9,6 +9,13 @@ import os
 import datetime
 from device_comm import DeviceManager, MotorValveController
 
+try:
+    from PIL import Image, ImageTk
+    HAS_PILLOW = True
+except ImportError:
+    HAS_PILLOW = False
+    print("Warning: Pillow library not found. Install 'pillow' for better logo quality.")
+
 class DebugWindow:
     def __init__(self, master):
         self.window = tk.Toplevel(master)
@@ -500,9 +507,31 @@ class BaseAPGUI:
         self.root.after(200, self.connect_hardware)
 
     def create_widgets(self):
-        # --- Title ---
-        title_lbl = tk.Label(self.main_frame, text="EPL Multi Anvil Press Controls", font=("Courier New", 20, "bold"), bg="white", anchor="w", padx=10, pady=5)
-        title_lbl.pack(fill=tk.X, pady=(0, 10))
+        # --- Header (Logo + Title) ---
+        header_frame = tk.Frame(self.main_frame, bg="white")
+        header_frame.pack(fill=tk.X, pady=(0, 10))
+
+        try:
+            logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo_CarnegieScience_primary_black_RGB.png")
+            if os.path.exists(logo_path):
+                if HAS_PILLOW:
+                    # Use Pillow for high-quality anti-aliased resizing
+                    pil_img = Image.open(logo_path)
+                    target_h = 80
+                    ratio = target_h / pil_img.height
+                    target_w = int(pil_img.width * ratio)
+                    pil_img = pil_img.resize((target_w, target_h), Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS)
+                    self.logo_img = ImageTk.PhotoImage(pil_img)
+                else:
+                    self.logo_img = tk.PhotoImage(file=logo_path)
+                    if self.logo_img.height() > 80:
+                        self.logo_img = self.logo_img.subsample(self.logo_img.height() // 80)
+                tk.Label(header_frame, image=self.logo_img, bg="white").pack(side=tk.LEFT, padx=(10, 5), pady=5)
+        except Exception as e:
+            print(f"Logo load error: {e}")
+
+        title_lbl = tk.Label(header_frame, text="EPL Multi Anvil Press Controls", font=("Trajan", 20, "bold"), bg="white", anchor="w", padx=10, pady=5)
+        title_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # --- System Status Bar ---
         self.status_frame = tk.Frame(self.main_frame, bg="#e0e0e0", relief="sunken", bd=1)

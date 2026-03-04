@@ -607,25 +607,25 @@ class BaseAPGUI:
         self.main_content.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=20, pady=20)
 
         # --- Sidebar Content ---
-        # Logo Area (White box for visibility of black logo)
-        logo_frame = tk.Frame(self.sidebar, bg="white", height=100)
+        # Logo Area
+        logo_frame = tk.Frame(self.sidebar, bg=self.colors["card"], height=150)
         logo_frame.pack(fill=tk.X, padx=0, pady=0)
 
         try:
-            logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo_CarnegieScience_primary_black_RGB.png")
+            logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo_CarnegieScience_primary_white_RGB.png")
             if os.path.exists(logo_path):
                 if HAS_PILLOW:
                     pil_img = Image.open(logo_path)
-                    target_h = 80
+                    target_h = 120
                     ratio = target_h / pil_img.height
                     target_w = int(pil_img.width * ratio)
                     pil_img = pil_img.resize((target_w, target_h), Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS)
                     self.logo_img = ImageTk.PhotoImage(pil_img)
                 else:
                     self.logo_img = tk.PhotoImage(file=logo_path)
-                    if self.logo_img.height() > 80:
-                        self.logo_img = self.logo_img.subsample(self.logo_img.height() // 80)
-                tk.Label(logo_frame, image=self.logo_img, bg="white").pack(pady=10)
+                    if self.logo_img.height() > 120:
+                        self.logo_img = self.logo_img.subsample(self.logo_img.height() // 120)
+                tk.Label(logo_frame, image=self.logo_img, bg=self.colors["card"]).pack(pady=10)
         except Exception as e:
             print(f"Logo load error: {e}")
 
@@ -784,7 +784,7 @@ class BaseAPGUI:
         tk.Button(adj_frame, text="+", width=3, bg=self.colors["btn_bg"], fg="white", relief="flat", command=lambda: self.manual_step_voltage(1)).pack(side=tk.LEFT, padx=5)
 
         # Quench Button
-        tk.Button(manual_card, text="QUENCH", bg="#D32F2F", fg="white", font=("Arial", 12, "bold"), relief="flat", command=self.quench_output).pack(fill=tk.X, padx=5, pady=(15, 5))
+        tk.Button(manual_card, text="ZERO OUTPUT", bg="#D32F2F", fg="white", font=("Arial", 12, "bold"), relief="flat", command=self.quench_output).pack(fill=tk.X, padx=5, pady=(15, 5))
 
     def toggle_manual_voltage(self):
         self.manual_voltage_active = not self.manual_voltage_active
@@ -920,8 +920,7 @@ class BaseAPGUI:
             canvas.create_line(40, y, w-20, y, fill="#444455", dash=(2, 4))
 
         # Draw Axes
-        canvas.create_line(40, 40, 40, h-30, width=2, fill="white") # Y Axis
-        canvas.create_line(40, h-30, w-20, h-30, width=2, fill="white") # X Axis
+        canvas.create_rectangle(40, 40, w-20, h-30, outline="white", width=2)
         
         # Axis Labels
         canvas.create_text(w/2, h-10, text="Time (s)", font=("Arial", 10), fill="#b0b0b0")

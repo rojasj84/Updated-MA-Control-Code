@@ -564,6 +564,7 @@ class BaseAPGUI:
         self.temperature_profile = []
         self.power_profile = []
         self.pressure_control_active = False
+        self.last_valid_readings = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
         
         self.manual_voltage_active = False
         # Save Settings Defaults
@@ -664,11 +665,11 @@ class BaseAPGUI:
         readout_container.pack(fill=tk.X, pady=(0, 20))
 
         headers = [
-            ("Temp Type", self.colors["accent"]), 
+            ("Temperature (C)", self.colors["accent"]), 
             ("Pressure (Bars)", self.colors["success"]), 
-            ("Voltage", "#ff9800"), 
-            ("Current", "#e91e63"), 
-            ("Resistance", "#9c27b0")
+            ("Voltage (V)", "#ff9800"), 
+            ("Current (A)", "#e91e63"), 
+            ("Power (W)", "#9c27b0")
         ]
         
         self.readout_labels = []
@@ -767,7 +768,7 @@ class BaseAPGUI:
         target_frame = tk.Frame(manual_card, bg=self.colors["card"])
         target_frame.pack(fill=tk.X, pady=2, padx=5)
         
-        tk.Label(target_frame, text="Output (V):", bg=self.colors["card"], fg="white").pack(side=tk.LEFT)
+        tk.Label(target_frame, text="Output:", bg=self.colors["card"], fg="white").pack(side=tk.LEFT)
         self.ent_target_voltage = tk.Entry(target_frame, width=6, bg=self.colors["bg"], fg="white", insertbackground="white", relief="flat")
         self.ent_target_voltage.pack(side=tk.LEFT, padx=5)
         self.ent_target_voltage.insert(0, "0.00")
@@ -878,8 +879,16 @@ class BaseAPGUI:
         plot_w = w - x_margin - 20
         plot_h = h - y_margin - 40
         
+        # Display names with units
+        display_names = {
+            "Temperature": "Temperature (C)",
+            "Pressure": "Pressure (Bars)",
+            "Power": "Power (W)"
+        }
+        display_text = display_names.get(view_name, view_name)
+
         # Draw Title
-        canvas.create_text(w/2, 20, text=f"{view_name} vs Time", font=("Arial", 12, "bold"), fill="white")
+        canvas.create_text(w/2, 20, text=f"{display_text} vs Time", font=("Arial", 12, "bold"), fill="white")
 
         # Draw Grid
         for i in range(1, 5):
@@ -897,7 +906,7 @@ class BaseAPGUI:
         
         # Axis Labels
         canvas.create_text(w/2, h-10, text="Time (s)", font=("Arial", 10), fill="#b0b0b0")
-        canvas.create_text(15, h/2, text=view_name, angle=90, font=("Arial", 10), fill="#b0b0b0")
+        canvas.create_text(15, h/2, text=display_text, angle=90, font=("Arial", 10), fill="#b0b0b0")
         
         # Plot Data
         data = self.data_history.get(view_name, [])
@@ -909,17 +918,53 @@ class BaseAPGUI:
             min_t, max_t = times[0], times[-1]
             min_v, max_v = min(values), max(values)
             
-            # Avoid divide by zero / flat line
+            # --- Y-Axis Scaling ---
+            # Set top of graph 10% higher than max value, per request
+            if max_v > 0:
+                display_max_v = max_v * 1.1
+            elif max_v < 0:
+                display_max_v = max_v * 0.9 # Closer to zero
+            else: # max_v is 0
+                display_max_v = 1.0
+
+            # Pad the bottom slightly for better appearance
+            v_range_for_padding = display_max_v - min_v
+            display_min_v = min_v - v_range_for_padding * 0.05
+
+            # Handle flat lines or very small ranges
+            if (display_max_v - display_min_v) < 1e-6:
+                display_max_v = max_v + 0.5
+                display_min_v = min_v - 0.5
+
+            # --- X-Axis Scaling ---
             if max_t == min_t: max_t += 1.0
-            if max_v == min_v: max_v += 1.0; min_v -= 1.0
+
+            # --- Draw Axis Ticks and Labels ---
+            num_ticks = 5
+            # Y-Axis Ticks
+            y_plot_range = display_max_v - display_min_v
+            for i in range(num_ticks):
+                val = display_min_v + (i / (num_ticks - 1)) * y_plot_range
+                y_pos = (h - y_margin) - (i / (num_ticks - 1)) * plot_h
+                canvas.create_text(x_margin - 5, y_pos, text=f"{val:.1f}", anchor="e", fill="#b0b0b0", font=("Arial", 8))
             
+            # X-Axis Ticks
+            x_plot_range = max_t - min_t
+            for i in range(num_ticks):
+                val = min_t + (i / (num_ticks - 1)) * x_plot_range
+                x_pos = x_margin + (i / (num_ticks - 1)) * plot_w
+                canvas.create_text(x_pos, h - y_margin + 10, text=f"{val:.0f}", anchor="n", fill="#b0b0b0", font=("Arial", 8))
+
+            # --- Plotting ---
             points = []
             for t, v in data:
-                x = x_margin + (t - min_t) / (max_t - min_t) * plot_w
-                y = (h - y_margin) - (v - min_v) / (max_v - min_v) * plot_h
+                x = x_margin + (t - min_t) / x_plot_range * plot_w
+                y = (h - y_margin) - (v - display_min_v) / y_plot_range * plot_h
                 points.extend([x, y])
             
             canvas.create_line(points, fill=self.canvas_configs[view_name]["color"], width=2)
+        else: # Handle case with no or single data point
+            canvas.create_text(w/2, h/2, text="No data to display", fill="#666677", font=("Arial", 12))
 
     def on_click(self):
         print("Button clicked")
@@ -1074,7 +1119,7 @@ class BaseAPGUI:
                 
                 data_snapshot[port] = val_str
                 # Small delay to ensure Mux is ready for next command
-                time.sleep(0.05)
+                time.sleep(0.1)
 
             # Handle Power Control Write (if active)
             if self.power_control_active:
@@ -1085,24 +1130,23 @@ class BaseAPGUI:
             self.data_queue.put(data_snapshot)
             
             # Loop delay
-            time.sleep(0.1)
+            time.sleep(0.5)
 
     def update_gui_loop(self):
         """Reads from queue and updates UI on the main thread."""
         # Variables for Power Control
-        meas_volts = 0.0
-        meas_amps = 0.0
-        meas_temp = 0.0
-        meas_press = 0.0
+        meas_temp = self.last_valid_readings[1]
+        meas_press = self.last_valid_readings[2]
+        meas_volts = self.last_valid_readings[3]
+        meas_amps = self.last_valid_readings[4]
         
         # Drain queue to get latest data
         latest_data = None
         while not self.data_queue.empty():
             latest_data = self.data_queue.get()
             
-        # Check if it's time for a slow update (every 60 seconds)
+        # Get current time for update checks
         current_time = time.time()
-        do_slow_update = (current_time - self.last_display_update_time) >= 60.0
 
         if latest_data:
             port_mapping = [1, 2, 3, 4, 5]
@@ -1116,8 +1160,14 @@ class BaseAPGUI:
                 # Parse values for control loop (Port 3=Volts, Port 4=Amps)
                 try:
                     # Handle simulation or raw strings
-                    clean_val = val_str.replace('+', '').replace('SIM_ACK', '0')
-                    val = float(clean_val)
+                    if "OVER" in val_str:
+                        val = 0.0
+                    else:
+                        clean_val = val_str.replace('+', '').replace('SIM_ACK', '0')
+                        val = float(clean_val)
+                    
+                    self.last_valid_readings[port] = val
+                    
                     if port == 1: meas_temp = val
                     if port == 2: meas_press = val
                     if port == 3: meas_volts = val
@@ -1132,7 +1182,7 @@ class BaseAPGUI:
         meas_res = 0.0
         if abs(meas_amps) > 0.0001:
             meas_res = meas_volts / meas_amps
-        self.readout_labels[4].config(text=f"{meas_res:.4f}")
+        self.readout_labels[4].config(text=f"{current_power:.2f}")
 
         # Pressure Control Loop (Profile Execution)
         if self.pressure_control_active and self.pressure_profile:
@@ -1200,32 +1250,35 @@ class BaseAPGUI:
             else:
                 self.target_power_watts = target_power
         
-        if self.recording_active and do_slow_update:
-            self.last_display_update_time = current_time
-            # Update History
-            timestamp = time.time() - self.start_time
-            self.data_history["Temperature"].append((timestamp, meas_temp))
-            self.data_history["Pressure"].append((timestamp, meas_press))
-            self.data_history["Power"].append((timestamp, current_power))
-            
-            # Keep history manageable (e.g., last 600 points. At 1 min/point, this is 10 hours)
-            for key in self.data_history:
-                if len(self.data_history[key]) > 600:
-                    self.data_history[key].pop(0)
-            
-            # Write to File (Check Interval)
-            if (time.time() - self.last_file_save_time) >= (self.save_interval_min * 60):
+        if self.recording_active:
+            # 1. Display Update (Graphing) - Every 1 second
+            if (current_time - self.last_display_update_time) >= 1.0:
+                self.last_display_update_time = current_time
+                # Update History
+                timestamp = time.time() - self.start_time
+                self.data_history["Temperature"].append((timestamp, meas_temp))
+                self.data_history["Pressure"].append((timestamp, meas_press))
+                self.data_history["Power"].append((timestamp, current_power))
+                
+                # Keep history manageable (e.g., last 7200 points. At 1 sec/point, this is 2 hours)
+                for key in self.data_history:
+                    if len(self.data_history[key]) > 7200:
+                        self.data_history[key].pop(0)
+                
+                # Refresh Graph
+                self.redraw_visible_graphs()
+
+            # 2. Write to File (Check Interval)
+            if (current_time - self.last_file_save_time) >= (self.save_interval_min * 60):
                 try:
+                    file_timestamp = time.time() - self.start_time
                     with open(self.csv_filename, "a") as f:
-                        line = f"{timestamp:.2f},{meas_temp:.2f},{meas_press:.2f},{meas_volts:.2f},{meas_amps:.2f},{current_power:.2f},{meas_res:.4f}\n"
+                        line = f"{file_timestamp:.2f},{meas_temp:.2f},{meas_press:.2f},{meas_volts:.2f},{meas_amps:.2f},{current_power:.2f},{meas_res:.4f}\n"
                         f.write(line)
-                    self.last_file_save_time = time.time()
+                    self.last_file_save_time = current_time
                     print(f"Data saved to file (Interval: {self.save_interval_min}m)")
                 except Exception as e:
                     print(f"File Write Error: {e}")
-            
-            # Refresh Graph
-            self.redraw_visible_graphs()
         
         # Update Power Dialog if open
         if self.power_dialog and self.power_dialog.top.winfo_exists():

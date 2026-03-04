@@ -630,7 +630,7 @@ class BaseAPGUI:
             print(f"Logo load error: {e}")
 
         # Sidebar Menu Label
-        tk.Label(self.sidebar, text="CONTROLS", bg=self.colors["card"], fg=self.colors["subtext"], font=("Arial", 10, "bold"), anchor="w").pack(fill=tk.X, padx=20, pady=(20, 10))
+        # tk.Label(self.sidebar, text="CONTROLS", bg=self.colors["card"], fg=self.colors["subtext"], font=("Arial", 10, "bold"), anchor="w").pack(fill=tk.X, padx=20, pady=(20, 10))
 
         # Sidebar Buttons
         buttons = [
@@ -656,9 +656,13 @@ class BaseAPGUI:
         tk.Label(title_frame, text="EPL Multi Anvil Press Controls", font=("Trajan", 24, "bold"), bg=self.colors["bg"], fg=self.colors["text"]).pack(side=tk.LEFT)
         
         # Status Indicator
-        self.lbl_system_status = tk.Label(title_frame, text="STANDBY", font=("Arial", 12, "bold"), bg=self.colors["bg"], fg=self.colors["danger"])
-        self.lbl_system_status.pack(side=tk.RIGHT, padx=10)
-        tk.Label(title_frame, text="STATUS:", font=("Arial", 10, "bold"), bg=self.colors["bg"], fg=self.colors["subtext"]).pack(side=tk.RIGHT)
+        # self.lbl_system_status = tk.Label(title_frame, text="STANDBY", font=("Arial", 12, "bold"), bg=self.colors["bg"], fg=self.colors["danger"])
+        # self.lbl_system_status.pack(side=tk.RIGHT, padx=10)
+        # tk.Label(title_frame, text="STATUS:", font=("Arial", 10, "bold"), bg=self.colors["bg"], fg=self.colors["subtext"]).pack(side=tk.RIGHT)
+        # Status Indicator (Moved to Graph Card)
+        # self.lbl_system_status = tk.Label(title_frame, text="STANDBY", font=("Arial", 12, "bold"), bg=self.colors["bg"], fg=self.colors["danger"])
+        # self.lbl_system_status.pack(side=tk.RIGHT, padx=10)
+        # tk.Label(title_frame, text="STATUS:", font=("Arial", 10, "bold"), bg=self.colors["bg"], fg=self.colors["subtext"]).pack(side=tk.RIGHT)
 
         # --- Top Row: Readouts ---
         readout_container = tk.Frame(self.main_content, bg=self.colors["bg"])
@@ -690,7 +694,10 @@ class BaseAPGUI:
         graph_ctrl_frame = tk.Frame(graph_card, bg=self.colors["card"])
         graph_ctrl_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        tk.Label(graph_ctrl_frame, text="LIVE VISUALIZATION", fg=self.colors["subtext"], bg=self.colors["card"], font=("Arial", 10, "bold")).pack(side=tk.LEFT)
+        # tk.Label(graph_ctrl_frame, text="LIVE VISUALIZATION", fg=self.colors["subtext"], bg=self.colors["card"], font=("Arial", 10, "bold")).pack(side=tk.LEFT)
+        tk.Label(graph_ctrl_frame, text="STATUS:", font=("Arial", 10, "bold"), bg=self.colors["card"], fg=self.colors["subtext"]).pack(side=tk.LEFT)
+        self.lbl_system_status = tk.Label(graph_ctrl_frame, text="STANDBY", font=("Arial", 12, "bold"), bg=self.colors["card"], fg=self.colors["danger"])
+        self.lbl_system_status.pack(side=tk.LEFT, padx=5)
         
         tk.Button(graph_ctrl_frame, text="RESET VIEW", bg=self.colors["btn_bg"], fg="white", font=("Arial", 9), 
                       command=self.set_all_view, relief="flat").pack(side=tk.RIGHT, padx=2)

@@ -783,6 +783,9 @@ class BaseAPGUI:
         self.ent_manual_inc.pack(side=tk.LEFT, padx=5)
         tk.Button(adj_frame, text="+", width=3, bg=self.colors["btn_bg"], fg="white", relief="flat", command=lambda: self.manual_step_voltage(1)).pack(side=tk.LEFT, padx=5)
 
+        # Quench Button
+        tk.Button(manual_card, text="QUENCH", bg="#D32F2F", fg="white", font=("Arial", 12, "bold"), relief="flat", command=self.quench_output).pack(fill=tk.X, padx=5, pady=(15, 5))
+
     def toggle_manual_voltage(self):
         self.manual_voltage_active = not self.manual_voltage_active
         if self.manual_voltage_active:
@@ -833,6 +836,22 @@ class BaseAPGUI:
         
         with self.serial_lock:
             self.device_mgr.set_omega_voltage(self.target_voltage)
+
+    def quench_output(self):
+        """Immediately sets output voltage to 0 and stops automation."""
+        self.target_voltage = 0.0
+        self.ent_target_voltage.delete(0, tk.END)
+        self.ent_target_voltage.insert(0, "0.00")
+        
+        # Disable Auto Power if active
+        if self.power_control_active:
+            self.power_control_active = False
+            self.var_auto_power.set(False)
+            
+        # Force 0V
+        with self.serial_lock:
+            self.device_mgr.set_omega_voltage(0.0)
+        print("QUENCH executed: Output set to 0V")
 
     def set_all_view(self):
         self.view_mode = "ALL"

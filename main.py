@@ -641,7 +641,6 @@ class BaseAPGUI:
         buttons = [
             ("START PROCESS", self.colors["success"], self.start_process),
             ("STOP PROCESS", self.colors["danger"], self.stop_process),
-            ("Save Settings", self.colors["btn_bg"], self.open_save_settings),
             ("System Controls", self.colors["btn_bg"], self.open_system_controls),
             ("Thermocouple Config", self.colors["btn_bg"], self.open_temp_config),
             ("Developer Mode", self.colors["btn_bg"], self.open_developer_mode),
@@ -1032,7 +1031,18 @@ class BaseAPGUI:
             self.power_control_active = False
 
     def start_process(self):
-        """Starts recording data and plotting."""
+        """Opens the Save Settings Dialog to configure logging before starting."""
+        SaveSettingsDialog(self.root, self.save_dir, self.base_filename, self.save_interval_min, self.on_start_confirmed)
+
+    def on_start_confirmed(self, new_dir, new_name, new_interval):
+        """Callback when user confirms settings in the dialog."""
+        self.save_dir = new_dir
+        self.base_filename = new_name
+        self.save_interval_min = new_interval
+        self.execute_start_process()
+
+    def execute_start_process(self):
+        """Starts recording data and plotting (called after settings are confirmed)."""
         self.data_history = {"Temperature": [], "Pressure": [], "Power": []}
         self.start_time = time.time()
         self.recording_active = True
@@ -1071,6 +1081,7 @@ class BaseAPGUI:
         try:
             with open(self.csv_filename, "w") as f:
                 f.write("Timestamp,Temperature,Pressure,Voltage,Current,Power,Resistance\n")
+                f.write("Date,Time,Temperature,Pressure,Voltage,Current,Power,Resistance\n")
         except Exception as e:
             print(f"Error creating file: {e}")
             
@@ -1303,15 +1314,19 @@ class BaseAPGUI:
             # 2. Write to File (Check Interval)
             if (current_time - self.last_file_save_time) >= (self.save_interval_min * 60):
                 try:
-                    file_timestamp = time.time() - self.start_time
+                    file_timestamp = datetime.datetime.now().strftime("%m/%d/%Y %H:%M:%S")
+                    now = datetime.datetime.now()
+                    log_date = now.strftime("%m/%d/%Y")
+                    log_time = now.strftime("%H:%M:%S")
                     with open(self.csv_filename, "a") as f:
-                        line = f"{file_timestamp:.2f},{meas_temp:.2f},{meas_press:.2f},{meas_volts:.2f},{meas_amps:.2f},{current_power:.2f},{meas_res:.4f}\n"
+                        line = f"{file_timestamp},{meas_temp:.2f},{meas_press:.2f},{meas_volts:.2f},{meas_amps:.2f},{current_power:.2f},{meas_res:.4f}\n"
+                        line = f"{log_date},{log_time},{meas_temp:.2f},{meas_press:.2f},{meas_volts:.2f},{meas_amps:.2f},{current_power:.2f},{meas_res:.4f}\n"
                         f.write(line)
                     self.last_file_save_time = current_time
                     print(f"Data saved to file (Interval: {self.save_interval_min}m)")
                 except Exception as e:
                     print(f"File Write Error: {e}")
-        
+
         # Update Power Dialog if open
         if self.power_dialog and self.power_dialog.top.winfo_exists():
             self.power_dialog.update_readings(current_power, meas_volts, meas_amps)
@@ -1453,5 +1468,7 @@ class BaseAPGUI:
 
 if __name__ == "__main__":
     root = tk.Tk()
+    app = BaseAPGUI(root)
+    root.mainloop()
     app = BaseAPGUI(root)
     root.mainloop()

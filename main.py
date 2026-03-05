@@ -21,7 +21,7 @@ class DebugWindow:
         self.window = tk.Toplevel(master)
         self.window.title("Developer Console - Serial Traffic")
         self.window.geometry("500x300")
-        self.text = tk.Text(self.window, bg="black", fg="#00FF00", font=("Courier", 10))
+        self.text = tk.Text(self.window, bg="black", fg="#00FF00", font=("Arial", 10))
         self.text.pack(fill=tk.BOTH, expand=True)
 
     def log(self, message):
@@ -133,27 +133,32 @@ class ProfileEditorDialog:
         self.rate_label = rate_label
         
         # --- Input Fields ---
-        input_frame = tk.LabelFrame(self.top, text="New Segment", padx=10, pady=10)
+        input_frame = tk.LabelFrame(self.top, text="New Segment", padx=10, pady=10, font=("Arial", 10))
         input_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        tk.Label(input_frame, text=f"Start {self.value_label}:").grid(row=0, column=0)
-        self.ent_start = tk.Entry(input_frame, width=10)
+        tk.Label(input_frame, text=f"Start {self.value_label}:", font=("Arial", 10)).grid(row=0, column=0)
+        self.ent_start = tk.Entry(input_frame, width=10, font=("Arial", 10))
         self.ent_start.grid(row=1, column=0, padx=5)
         
-        tk.Label(input_frame, text=f"Final {self.value_label}:").grid(row=0, column=1)
-        self.ent_end = tk.Entry(input_frame, width=10)
+        tk.Label(input_frame, text=f"Final {self.value_label}:", font=("Arial", 10)).grid(row=0, column=1)
+        self.ent_end = tk.Entry(input_frame, width=10, font=("Arial", 10))
         self.ent_end.grid(row=1, column=1, padx=5)
         
-        tk.Label(input_frame, text="Duration (hours):").grid(row=0, column=2)
-        self.ent_duration = tk.Entry(input_frame, width=10)
+        tk.Label(input_frame, text="Duration (hours):", font=("Arial", 10)).grid(row=0, column=2)
+        self.ent_duration = tk.Entry(input_frame, width=10, font=("Arial", 10))
         self.ent_duration.grid(row=1, column=2, padx=5)
         
-        tk.Button(input_frame, text="Add Segment", command=self.add_segment).grid(row=1, column=3, padx=10)
+        tk.Button(input_frame, text="Add Segment", command=self.add_segment, font=("Arial", 10)).grid(row=1, column=3, padx=10)
 
         # --- List Display ---
         list_frame = tk.Frame(self.top)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
+        # Style for Treeview
+        style = ttk.Style(self.top)
+        style.configure("Treeview.Heading", font=("Arial", 10, "bold"))
+        style.configure("Treeview", font=("Arial", 10), rowheight=25)
+
         columns = ("start", "end", "duration", "rate")
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=8)
         self.tree.heading("start", text=f"Start {self.value_label}")
@@ -161,18 +166,18 @@ class ProfileEditorDialog:
         self.tree.heading("duration", text="Duration (hours)")
         self.tree.heading("rate", text=self.rate_label)
         
-        self.tree.column("start", width=100, anchor="center")
-        self.tree.column("end", width=100, anchor="center")
-        self.tree.column("duration", width=100, anchor="center")
-        self.tree.column("rate", width=100, anchor="center")
+        self.tree.column("start", width=120, anchor="center")
+        self.tree.column("end", width=120, anchor="center")
+        self.tree.column("duration", width=120, anchor="center")
+        self.tree.column("rate", width=120, anchor="center")
         
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # --- Buttons ---
         btn_frame = tk.Frame(self.top)
         btn_frame.pack(pady=10)
-        tk.Button(btn_frame, text="Save & Exit", bg="green", fg="white", command=self.save_exit).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="Clear All", bg="red", fg="white", command=self.clear_all).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Save & Exit", bg="green", fg="white", command=self.save_exit, font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Clear All", bg="red", fg="white", command=self.clear_all, font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
 
         self.refresh_list()
 
@@ -487,7 +492,7 @@ class ToggleSwitch(tk.Canvas):
         y = 5
         
         # Draw Text
-        self.create_text(5, 15, text=self.text, fill="white", anchor="w", font=("Arial", 10))
+        self.create_text(5, 15, text=self.text, fill="white", anchor="w", font=("Arial", 12))
         
         if HAS_PILLOW:
             # Supersampling for smooth edges
@@ -653,7 +658,7 @@ class BaseAPGUI:
         title_frame = tk.Frame(self.main_content, bg=self.colors["bg"])
         title_frame.pack(fill=tk.X, pady=(0, 20))
         
-        tk.Label(title_frame, text="EPL Multi Anvil Press Controls", font=("Trajan", 24, "bold"), bg=self.colors["bg"], fg=self.colors["text"]).pack(side=tk.LEFT)
+        tk.Label(title_frame, text="EPL Multi Anvil Press Controls", font=("Arial", 24, "bold"), bg=self.colors["bg"], fg=self.colors["text"]).pack(side=tk.LEFT)
         
         # Status Indicator
         # self.lbl_system_status = tk.Label(title_frame, text="STANDBY", font=("Arial", 12, "bold"), bg=self.colors["bg"], fg=self.colors["danger"])
@@ -681,8 +686,8 @@ class BaseAPGUI:
             card = tk.Frame(readout_container, bg=self.colors["card"], padx=15, pady=10)
             card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0 if i==0 else 10, 0))
             
-            tk.Label(card, text=text, fg=color, bg=self.colors["card"], font=("Arial", 10, "bold")).pack(anchor="w")
-            val = tk.Label(card, text="---", fg=self.colors["text"], bg=self.colors["card"], font=("Courier New", 20, "bold"))
+            tk.Label(card, text=text, fg=color, bg=self.colors["card"], font=("Arial", 14, "bold")).pack(anchor="w")
+            val = tk.Label(card, text="---", fg=self.colors["text"], bg=self.colors["card"], font=("Arial", 20, "bold"))
             val.pack(anchor="e", pady=(5, 0))
             self.readout_labels.append(val)
 
@@ -729,7 +734,7 @@ class BaseAPGUI:
         auto_card = tk.Frame(controls_container, bg=self.colors["card"], padx=15, pady=15)
         auto_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
         
-        tk.Label(auto_card, text="AUTOMATION PROFILES", fg=self.colors["accent"], bg=self.colors["card"], font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 10))
+        tk.Label(auto_card, text="AUTOMATION PROFILES", fg=self.colors["accent"], bg=self.colors["card"], font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 10))
         
         # Grid for Auto Controls
         auto_grid = tk.Frame(auto_card, bg=self.colors["card"])
@@ -737,7 +742,7 @@ class BaseAPGUI:
 
         # Helper for styled buttons
         def style_btn(parent, text, cmd):
-            return tk.Button(parent, text=text, command=cmd, bg=self.colors["btn_bg"], fg="white", relief="flat")
+            return tk.Button(parent, text=text, command=cmd, bg=self.colors["btn_bg"], fg="white", relief="flat", font=("Arial", 12))
 
         def style_chk(parent, text, var, cmd, color):
             return ToggleSwitch(parent, text=text, variable=var, command=cmd, bg=self.colors["card"], active_color=color)
@@ -767,28 +772,28 @@ class BaseAPGUI:
         manual_card = tk.Frame(controls_container, bg=self.colors["card"], padx=15, pady=15)
         manual_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        tk.Label(manual_card, text="MANUAL OVERRIDE", fg=self.colors["accent"], bg=self.colors["card"], font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 10))
+        tk.Label(manual_card, text="MANUAL OVERRIDE", fg=self.colors["accent"], bg=self.colors["card"], font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 10))
 
-        self.btn_manual_voltage = tk.Button(manual_card, text="Start Manual Control", bg=self.colors["btn_bg"], fg="white", relief="flat", command=self.toggle_manual_voltage)
+        self.btn_manual_voltage = tk.Button(manual_card, text="Start Manual Control", bg=self.colors["btn_bg"], fg="white", relief="flat", command=self.toggle_manual_voltage, font=("Arial", 12))
         self.btn_manual_voltage.pack(fill=tk.X, padx=5, pady=2)
         
         target_frame = tk.Frame(manual_card, bg=self.colors["card"])
         target_frame.pack(fill=tk.X, pady=2, padx=5)
         
-        tk.Label(target_frame, text="Output:", bg=self.colors["card"], fg="white").pack(side=tk.LEFT)
-        self.ent_target_voltage = tk.Entry(target_frame, width=6, bg=self.colors["bg"], fg="white", insertbackground="white", relief="flat")
+        tk.Label(target_frame, text="Output:", bg=self.colors["card"], fg="white", font=("Arial", 12)).pack(side=tk.LEFT)
+        self.ent_target_voltage = tk.Entry(target_frame, width=6, bg=self.colors["bg"], fg="white", insertbackground="white", relief="flat", font=("Arial", 12))
         self.ent_target_voltage.pack(side=tk.LEFT, padx=5)
         self.ent_target_voltage.insert(0, "0.00")
-        tk.Button(target_frame, text="SET", bg=self.colors["accent"], fg="black", font=("Arial", 8, "bold"), relief="flat", command=self.set_manual_voltage_direct).pack(side=tk.LEFT)
+        tk.Button(target_frame, text="SET", bg=self.colors["accent"], fg="black", font=("Arial", 10, "bold"), relief="flat", command=self.set_manual_voltage_direct).pack(side=tk.LEFT)
         
         adj_frame = tk.Frame(manual_card, bg=self.colors["card"])
         adj_frame.pack(fill=tk.X, pady=2)
         
-        tk.Button(adj_frame, text="-", width=3, bg=self.colors["btn_bg"], fg="white", relief="flat", command=lambda: self.manual_step_voltage(-1)).pack(side=tk.LEFT, padx=5)
-        self.ent_manual_inc = tk.Entry(adj_frame, width=5, bg=self.colors["bg"], fg="white", insertbackground="white", relief="flat", justify="center")
+        tk.Button(adj_frame, text="-", width=3, bg=self.colors["btn_bg"], fg="white", relief="flat", command=lambda: self.manual_step_voltage(-1), font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=5)
+        self.ent_manual_inc = tk.Entry(adj_frame, width=5, bg=self.colors["bg"], fg="white", insertbackground="white", relief="flat", justify="center", font=("Arial", 12))
         self.ent_manual_inc.insert(0, "0.05")
         self.ent_manual_inc.pack(side=tk.LEFT, padx=5)
-        tk.Button(adj_frame, text="+", width=3, bg=self.colors["btn_bg"], fg="white", relief="flat", command=lambda: self.manual_step_voltage(1)).pack(side=tk.LEFT, padx=5)
+        tk.Button(adj_frame, text="+", width=3, bg=self.colors["btn_bg"], fg="white", relief="flat", command=lambda: self.manual_step_voltage(1), font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=5)
 
         # Quench Button
         tk.Button(manual_card, text="ZERO OUTPUT", bg="#D32F2F", fg="white", font=("Arial", 12, "bold"), relief="flat", command=self.quench_output).pack(fill=tk.X, padx=5, pady=(15, 5))

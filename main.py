@@ -669,29 +669,7 @@ class BaseAPGUI:
         # self.lbl_system_status.pack(side=tk.RIGHT, padx=10)
         # tk.Label(title_frame, text="STATUS:", font=("Arial", 10, "bold"), bg=self.colors["bg"], fg=self.colors["subtext"]).pack(side=tk.RIGHT)
 
-        # --- Top Row: Readouts ---
-        readout_container = tk.Frame(self.main_content, bg=self.colors["bg"])
-        readout_container.pack(fill=tk.X, pady=(0, 20))
-
-        headers = [
-            ("Temperature (C)", self.colors["accent"]), 
-            ("Pressure (Bars)", self.colors["success"]), 
-            ("Voltage (V)", "#ff9800"), 
-            ("Current (A)", "#e91e63"), 
-            ("Power (W)", "#9c27b0")
-        ]
-        
-        self.readout_labels = []
-        for i, (text, color) in enumerate(headers):
-            card = tk.Frame(readout_container, bg=self.colors["card"], padx=15, pady=10)
-            card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0 if i==0 else 10, 0))
-            
-            tk.Label(card, text=text, fg=color, bg=self.colors["card"], font=("Arial", 14, "bold")).pack(anchor="w")
-            val = tk.Label(card, text="---", fg=self.colors["text"], bg=self.colors["card"], font=("Arial", 20, "bold"))
-            val.pack(anchor="e", pady=(5, 0))
-            self.readout_labels.append(val)
-
-        # --- Middle Row: Graph ---
+        # --- Graph Section ---
         graph_card = tk.Frame(self.main_content, bg=self.colors["card"], padx=2, pady=2)
         graph_card.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
 
@@ -725,6 +703,28 @@ class BaseAPGUI:
             self.canvases[view] = cv
         
         self.update_graph_layout()
+
+        # --- Readouts Section ---
+        readout_container = tk.Frame(self.main_content, bg=self.colors["bg"])
+        readout_container.pack(fill=tk.X, pady=(0, 20))
+
+        headers = [
+            ("Temperature (C)", self.colors["accent"]), 
+            ("Pressure (Bars)", self.colors["success"]), 
+            ("Voltage (V)", "#ff9800"), 
+            ("Current (A)", "#e91e63"), 
+            ("Power (W)", "#9c27b0")
+        ]
+        
+        self.readout_labels = []
+        for i, (text, color) in enumerate(headers):
+            card = tk.Frame(readout_container, bg=self.colors["card"], padx=15, pady=10)
+            card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0 if i==0 else 10, 0))
+            
+            tk.Label(card, text=text, fg=color, bg=self.colors["card"], font=("Arial", 14, "bold")).pack(anchor="w")
+            val = tk.Label(card, text="---", fg=self.colors["text"], bg=self.colors["card"], font=("Arial", 20, "bold"))
+            val.pack(anchor="e", pady=(5, 0))
+            self.readout_labels.append(val)
 
         # --- Bottom Row: Controls ---
         controls_container = tk.Frame(self.main_content, bg=self.colors["bg"])
@@ -775,6 +775,7 @@ class BaseAPGUI:
         tk.Label(manual_card, text="MANUAL OVERRIDE", fg=self.colors["accent"], bg=self.colors["card"], font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 10))
 
         self.btn_manual_voltage = tk.Button(manual_card, text="Start Manual Control", bg=self.colors["btn_bg"], fg="white", relief="flat", command=self.toggle_manual_voltage, font=("Arial", 12))
+        self.btn_manual_voltage = tk.Button(manual_card, text="Start Manual Control", bg=self.colors["success"], fg="white", relief="flat", command=self.toggle_manual_voltage, font=("Arial", 12))
         self.btn_manual_voltage.pack(fill=tk.X, padx=5, pady=2)
         
         target_frame = tk.Frame(manual_card, bg=self.colors["card"])
@@ -809,6 +810,7 @@ class BaseAPGUI:
                 print("Auto Power Control disabled for Manual Output Control.")
         else:
             self.btn_manual_voltage.config(text="Start Manual Control", bg=self.colors["btn_bg"], fg="white")
+            self.btn_manual_voltage.config(text="Start Manual Control", bg=self.colors["success"], fg="white")
 
     def manual_step_voltage(self, sign):
         if not self.manual_voltage_active:
@@ -912,8 +914,8 @@ class BaseAPGUI:
         
         # Display names with units
         display_names = {
-            "Temperature": "Temperature (C)",
-            "Pressure": "Pressure (Bars)",
+            "Temperature": "Temperature (°C)",
+            "Pressure": "Pressure (Bar)",
             "Power": "Power (W)"
         }
         display_text = display_names.get(view_name, view_name)
@@ -1386,7 +1388,7 @@ class BaseAPGUI:
 
     def open_pressure_config(self):
         """Opens the Pressure Profile Dialog."""
-        ProfileEditorDialog(self.root, self.pressure_profile, self.save_pressure_profile, title="Input Pressure Profile", value_label="Pressure (Bars)", rate_label="Rate (Bars/Hr)")
+        ProfileEditorDialog(self.root, self.pressure_profile, self.save_pressure_profile, title="Input Pressure Profile", value_label="Pressure (Bar)", rate_label="Rate (Bars/Hr)")
 
     def save_pressure_profile(self, new_profile):
         self.pressure_profile = new_profile

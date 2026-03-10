@@ -37,6 +37,12 @@ REG_PRESSURE_SP_MIN = 3094
 REG_PRESSURE_SP_MAX = 3096
 REG_VOLTS = 28906
 REG_AMPS = 29346
+REG_PROF_ID = 16510
+REG_PROF_STEP = 16512
+REG_PROF_TYPE = 16514
+REG_PROF_TARGET1 = 16516
+REG_PROF_DURATION = 16520
+REG_PROF_ACTION = 16562
 
 class WatlowF4T:
     def __init__(self, ip=DEFAULT_IP, port=DEFAULT_PORT, slave_id=DEFAULT_SLAVE_ID):
@@ -166,6 +172,69 @@ class WatlowF4T:
         min_val = self.read_float(min_addr)
         max_val = self.read_float(max_addr)
         return min_val, max_val
+
+    def upload_profile(self, steps, profile_id=1):
+        if self.simulated:
+            return True
+        if not self.connect():
+            return False
+        
+        try:
+            # Select Profile
+            if self.write_uint16(REG_PROF_ID, profile_id) is not True: return False
+            
+            for i, step in enumerate(steps):
+                if self.write_uint16(REG_PROF_STEP, i + 1) is not True: return False
+                if self.write_uint16(REG_PROF_TYPE, 1) is not True: return False # 1 = Ramp Time
+                if self.write_float(REG_PROF_TARGET1, step['end']) is not True: return False
+                if self.write_float(REG_PROF_DURATION, step['duration']) is not True: return False
+                
+            # End Step
+            if self.write_uint16(REG_PROF_STEP, len(steps) + 1) is not True: return False
+            result = self.write_uint16(REG_PROF_TYPE, 6) # 6 = End
+            return result is True
+        except Exception as e:
+            print(f"Profile Upload Error: {e}")
+            return False
+
+    def download_profile(self, profile_id=1):
+        if self.simulated:
+            # Return a sample profile for simulation
+            return [
+                {'end': 50.0, 'duration': 60.0}, # 60 minutes
+                {'end': 100.0, 'duration': 120.0},
+                {'end': 100.0, 'duration': 30.0} # Soak
+            ]
+        if not self.connect():
+            return None
+
+        steps = []
+        try:
+            # Select Profile
+            if self.write_uint16(REG_PROF_ID, profile_id) is not True:
+                print("Failed to select profile for download.")
+                return None
+
+            # Loop through a reasonable number of steps (e.g., 50 is the max for F4T)
+            for i in range(1, 51):
+                if self.write_uint16(REG_PROF_STEP, i) is not True:
+                    break # Stop if we can't select a step
+
+                step_type = self.read_uint16(REG_PROF_TYPE)
+                if step_type is None or step_type == 6: # End of profile or read error
+                    break
+                
+                if step_type == 1: # Ramp Time
+                    target = self.read_float(REG_PROF_TARGET1)
+                    duration = self.read_float(REG_PROF_DURATION)
+                    if target is not None and duration is not None:
+                        steps.append({'end': target, 'duration': duration})
+                    else:
+                        break # Stop on read error
+            return steps
+        except Exception as e:
+            print(f"Profile Download Error: {e}")
+            return None
 
 class WatlowF4TGui:
     def __init__(self, root, device):

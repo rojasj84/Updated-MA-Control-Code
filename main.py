@@ -1554,11 +1554,108 @@ class BaseAPGUI:
 
     def open_pressure_config(self):
         """Opens the Pressure Profile Dialog."""
-        ProfileEditorDialog(self.root, self.pressure_profile, self.save_pressure_profile, title="Input Pressure Profile", value_label="Pressure (Bar)", rate_label="Rate (Bars/Hr)")
+        # Start with the current local profile
+        profile_to_edit = self.pressure_profile
+
+        # If Watlow is connected, download the existing profile first so the
+        # editor starts from the controller's current program.
+        if self.controller_type == 'watlow' and self.watlow_controller and not self.watlow_controller.simulated:
+            with self.serial_lock:
+                downloaded_steps = self.download_profile_from_watlow(profile_id=1)
+
+            if downloaded_steps is not None:
+                print(f"Downloaded {len(downloaded_steps)} steps from Watlow.")
+                # Convert Watlow steps to the format ProfileEditorDialog expects.
+                new_profile = []
+                last_end = 0.0
+
+                for step in downloaded_steps:
+                    start_val = last_end
+                    end_val = step['end']
+                    duration_hrs = step['duration'] / 60.0
+                    rate = (end_val - start_val) / duration_hrs if duration_hrs > 0 else 0
+
+                    new_profile.append({
+                        'start': start_val,
+                        'end': end_val,
+                        'duration': duration_hrs,
+                        'rate': rate
+                    })
+                    last_end = end_val
+
+                profile_to_edit = new_profile
+                self.pressure_profile = list(new_profile)
+            else:
+                messagebox.showerror("Download Failed", "Could not retrieve profile from Watlow F4T. Showing local profile instead.", parent=self.root)
+
+        ProfileEditorDialog(self.root, profile_to_edit, self.save_pressure_profile, title="Input Pressure Profile", value_label="Pressure (Bar)", rate_label="Rate (Bars/Hr)")
 
     def save_pressure_profile(self, new_profile):
         self.pressure_profile = new_profile
         print(f"Pressure Profile Saved: {len(self.pressure_profile)} segments")
+        
+        if self.controller_type == 'watlow' and self.watlow_controller:
+            if messagebox.askyesno("Watlow F4T", "Upload this profile to Watlow F4T (Profile 1)?", parent=self.root):
+                steps = []
+                for seg in new_profile:
+                    steps.append({'end': seg['end'], 'duration': seg['duration'] * 60.0}) # Hours to Mins
+
+                with self.serial_lock:
+                    success = self.upload_profile_to_watlow(steps)
+                
+                if success:
+                    messagebox.showinfo("Success", "Profile uploaded successfully.", parent=self.root)
+                    if messagebox.askyesno("Success", "Profile uploaded successfully.\n\nStart Profile 1 now?", parent=self.root):
+                        with self.serial_lock:
+                            # 1782 = Start Action Enum for F4T
+                            self.watlow_controller.write_uint16(REG_PROF_ACTION, 1782)
+                else:
+                    messagebox.showerror("Error", "Failed to upload profile.", parent=self.root)
+
+    def download_profile_from_watlow(self, profile_id=1):
+        """Downloads profile steps from Watlow F4T using manually mapped registers."""
+        steps = []
+        try:
+            # Select Profile
+            if not self.watlow_controller.write_uint16(REG_PROF_ID, profile_id):
+                print("Failed to select profile for download.")
+                return None
+
+            # Loop through steps (max 50)
+            for i in range(1, 51):
+                if not self.watlow_controller.write_uint16(REG_PROF_STEP, i): break
+                
+                step_type = self.watlow_controller.read_uint16(REG_PROF_TYPE)
+                if step_type is None or step_type == 6: # 6 = End
+                    break
+                
+                if step_type == 1: # Ramp Time
+                    target = self.watlow_controller.read_float(REG_PROF_TARGET1)
+                    duration = self.watlow_controller.read_float(REG_PROF_DURATION)
+                    if target is not None and duration is not None:
+                        steps.append({'end': target, 'duration': duration})
+            return steps
+        except Exception as e:
+            print(f"Profile Download Error: {e}")
+            return None
+
+    def upload_profile_to_watlow(self, steps, profile_id=1):
+        """Uploads profile steps to Watlow F4T using manually mapped registers."""
+        try:
+            if not self.watlow_controller.write_uint16(REG_PROF_ID, profile_id): return False
+            
+            for i, step in enumerate(steps):
+                if not self.watlow_controller.write_uint16(REG_PROF_STEP, i + 1): return False
+                if not self.watlow_controller.write_uint16(REG_PROF_TYPE, 1): return False # 1 = Ramp Time
+                if not self.watlow_controller.write_float(REG_PROF_TARGET1, step['end']): return False
+                if not self.watlow_controller.write_float(REG_PROF_DURATION, step['duration']): return False
+                
+            # End Step
+            if not self.watlow_controller.write_uint16(REG_PROF_STEP, len(steps) + 1): return False
+            return self.watlow_controller.write_uint16(REG_PROF_TYPE, 6) # 6 = End
+        except Exception as e:
+            print(f"Profile Upload Error: {e}")
+            return False
 
     def open_temp_profile(self):
         ProfileEditorDialog(self.root, self.temperature_profile, self.save_temp_profile, title="Input Temperature Profile", value_label="Temperature (C)", rate_label="Rate (C/Hr)")

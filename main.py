@@ -8,6 +8,12 @@ import time
 import os
 import datetime
 from device_comm import DeviceManager, MotorValveController
+from Watlow import WatlowF4T
+from Watlow import (
+    REG_TEMP_PV, REG_TEMP_SP, REG_TEMP_MANUAL_POWER, REG_TEMP_MODE,
+    REG_PRESSURE_PV, REG_PRESSURE_SP, REG_PRESSURE_MANUAL_POWER, REG_PRESSURE_MODE,
+    REG_VOLTS, REG_AMPS
+)
 
 try:
     from PIL import Image, ImageTk, ImageDraw
@@ -15,6 +21,85 @@ try:
 except ImportError:
     HAS_PILLOW = False
     print("Warning: Pillow library not found. Install 'pillow' for better logo quality.")
+
+class ControllerSelectionDialog:
+    def __init__(self, master, callback):
+        self.top = tk.Toplevel(master)
+        self.top.title("Select Controller")
+        self.top.geometry("350x150")
+        self.callback = callback
+        self.top.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        master.update_idletasks()
+        x = master.winfo_x() + (master.winfo_width() // 2) - (350 // 2)
+        y = master.winfo_y() + (master.winfo_height() // 2) - (150 // 2)
+        self.top.geometry(f"+{x}+{y}")
+
+        self.top.grab_set()
+
+        tk.Label(self.top, text="Please select the control hardware:", font=("Arial", 12)).pack(pady=20)
+        
+        btn_frame = tk.Frame(self.top)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="Serial (Texmate/Omega)", width=20, command=lambda: self.select('serial')).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Watlow F4T (Network)", width=20, command=lambda: self.select('watlow')).pack(side=tk.LEFT, padx=10)
+
+    def select(self, controller_type):
+        self.callback(controller_type)
+        self.top.destroy()
+
+    def on_close(self):
+        self.callback(None)
+        self.top.destroy()
+
+class WatlowIPDialog:
+    def __init__(self, master, failed_ip):
+        self.top = tk.Toplevel(master)
+        self.top.title("Watlow Connection Failed")
+        self.top.geometry("400x200")
+        self.action = None
+        self.new_ip = failed_ip
+
+        master.update_idletasks()
+        x = master.winfo_x() + (master.winfo_width() // 2) - (400 // 2)
+        y = master.winfo_y() + (master.winfo_height() // 2) - (200 // 2)
+        self.top.geometry(f"+{x}+{y}")
+
+        self.top.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.top.grab_set()
+
+        tk.Label(self.top, text=f"Could not connect to Watlow F4T at:", font=("Arial", 12)).pack(pady=(20, 5))
+        tk.Label(self.top, text=f"{failed_ip}", font=("Arial", 12, "bold"), fg="red").pack()
+
+        ip_frame = tk.Frame(self.top)
+        ip_frame.pack(pady=10)
+        tk.Label(ip_frame, text="New IP Address:").pack(side=tk.LEFT, padx=5)
+        self.ip_entry = tk.Entry(ip_frame, width=15)
+        self.ip_entry.insert(0, failed_ip)
+        self.ip_entry.pack(side=tk.LEFT)
+
+        btn_frame = tk.Frame(self.top)
+        btn_frame.pack(pady=20)
+
+        tk.Button(btn_frame, text="Retry Connection", command=self.retry).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Use Simulation", command=self.simulate).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Exit", command=self.cancel).pack(side=tk.LEFT, padx=10)
+
+        self.top.wait_window()
+
+    def retry(self):
+        self.action = 'retry'
+        self.new_ip = self.ip_entry.get()
+        self.top.destroy()
+
+    def simulate(self):
+        self.action = 'simulate'
+        self.top.destroy()
+
+    def cancel(self):
+        self.action = 'cancel'
+        self.top.destroy()
 
 class DebugWindow:
     def __init__(self, master):
@@ -268,12 +353,13 @@ class PowerControlDialog:
         self.on_update(self.active, target)
 
 class SystemControlsDialog:
-    def __init__(self, master, device_mgr, motor_mgr, serial_lock):
+    def __init__(self, master, device_mgr, motor_mgr, serial_lock, controller_type):
         self.top = tk.Toplevel(master)
         self.top.title("System Controls")
         self.top.geometry("800x600")
         self.device_mgr = device_mgr
         self.motor_mgr = motor_mgr
+        self.controller_type = controller_type
         self.serial_lock = serial_lock
         
         # Layout: Left Pane (Motors/Purge), Right Pane (Voltage/Calibration)
@@ -339,8 +425,11 @@ class SystemControlsDialog:
         # Calibration
         cal_frame = tk.LabelFrame(right_pane, text="Calibration", padx=10, pady=10)
         cal_frame.pack(fill=tk.X, pady=20)
-        
-        tk.Button(cal_frame, text="Zero Pressure Calibration", bg="#FFDDDD", command=self.open_zero_pressure).pack(fill=tk.X, pady=5)
+        btn_zero = tk.Button(cal_frame, text="Zero Pressure Calibration", bg="#FFDDDD", command=self.open_zero_pressure)
+        btn_zero.pack(fill=tk.X, pady=5)
+
+        if self.controller_type == 'watlow':
+            btn_zero.config(state="disabled", text="Zero Pressure (N/A for Watlow)")
 
     def open_zero_pressure(self):
         ZeroPressureDialog(self.top, self.device_mgr, self.serial_lock)
@@ -559,6 +648,9 @@ class BaseAPGUI:
         self.motor_mgr = MotorValveController() # Second serial port controller
         self.target_voltage = 0.0 # Tracks the state for Port 5 (Omega)
         
+        self.controller_type = None
+        self.watlow_controller = None
+        self.watlow_ip_address = '192.168.0.222' # Default Watlow IP
         self.view_mode = "ALL" # "ALL" or "SINGLE"
         
         # Threading synchronization
@@ -595,10 +687,23 @@ class BaseAPGUI:
         self.root.configure(bg=self.colors["bg"])
         self.root.geometry("1280x800")
 
+        self.root.withdraw() # Hide main window until controller is selected
         self.create_widgets()
         
-        # Attempt connection and start polling
-        self.root.after(200, self.connect_hardware)
+        self.select_controller()
+
+    def select_controller(self):
+        def callback(selection):
+            if selection is None:
+                self.root.destroy()
+                return
+
+            self.controller_type = selection
+            print(f"Controller selected: {self.controller_type}")
+            self.root.deiconify()
+            self.root.after(200, self.connect_hardware)
+
+        ControllerSelectionDialog(self.root, callback)
 
     def create_widgets(self):
         # --- Main Layout Containers ---
@@ -650,6 +755,8 @@ class BaseAPGUI:
         for text, color, cmd in buttons:
             btn = tk.Button(self.sidebar, text=text, bg=color, fg="white", font=("Arial", 11), relief="flat", padx=10, pady=8, command=cmd, cursor="hand2")
             btn.pack(fill=tk.X, padx=15, pady=5)
+            if text == "Thermocouple Config":
+                self.btn_thermocouple_config = btn
 
         # --- Main Content Area ---
         
@@ -773,14 +880,11 @@ class BaseAPGUI:
         
         tk.Label(manual_card, text="MANUAL OVERRIDE", fg=self.colors["accent"], bg=self.colors["card"], font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 10))
 
-        self.btn_manual_voltage = tk.Button(manual_card, text="Start Manual Control", bg=self.colors["btn_bg"], fg="white", relief="flat", command=self.toggle_manual_voltage, font=("Arial", 12))
-        self.btn_manual_voltage = tk.Button(manual_card, text="Start Manual Control", bg=self.colors["success"], fg="white", relief="flat", command=self.toggle_manual_voltage, font=("Arial", 12))
+        self.btn_manual_voltage = tk.Button(manual_card, text="Start Manual Control", bg=self.colors["success"], fg="white", relief="flat", command=self.toggle_manual_voltage, font=("Arial", 12), cursor="hand2")
         self.btn_manual_voltage.pack(fill=tk.X, padx=5, pady=2)
         
         target_frame = tk.Frame(manual_card, bg=self.colors["card"])
         target_frame.pack(fill=tk.X, pady=2, padx=5)
-        
-        tk.Label(target_frame, text="Output:", bg=self.colors["card"], fg="white", font=("Arial", 12)).pack(side=tk.LEFT)
         self.ent_target_voltage = tk.Entry(target_frame, width=6, bg=self.colors["bg"], fg="white", insertbackground="white", relief="flat", font=("Arial", 12))
         self.ent_target_voltage.pack(side=tk.LEFT, padx=5)
         self.ent_target_voltage.insert(0, "0.00")
@@ -801,27 +905,51 @@ class BaseAPGUI:
     def toggle_manual_voltage(self):
         self.manual_voltage_active = not self.manual_voltage_active
         if self.manual_voltage_active:
-            self.btn_manual_voltage.config(text="STOP MANUAL CONTROL", bg=self.colors["danger"], fg="white")
+            self.btn_manual_voltage.config(text="STOP MANUAL CONTROL", bg=self.colors["danger"])
             # Disable conflicting auto controls
             if self.power_control_active:
-                self.var_auto_power.set(False)
-                self.power_control_active = False
+                self.var_auto_power.set(False) # This will trigger its command to set self.power_control_active = False
                 print("Auto Power Control disabled for Manual Output Control.")
+            
+            if self.controller_type == 'watlow':
+                with self.serial_lock:
+                    self.watlow_controller.write_uint16(REG_TEMP_MODE, 54) # Manual Mode
+                print("Watlow controller set to Manual Power mode.")
         else:
-            self.btn_manual_voltage.config(text="Start Manual Control", bg=self.colors["btn_bg"], fg="white")
-            self.btn_manual_voltage.config(text="Start Manual Control", bg=self.colors["success"], fg="white")
+            self.btn_manual_voltage.config(text="Start Manual Control", bg=self.colors["success"])
+            if self.controller_type == 'watlow':
+                with self.serial_lock:
+                    self.watlow_controller.write_uint16(REG_TEMP_MODE, 10) # Auto Mode
+                print("Watlow controller set back to Auto mode.")
 
     def manual_step_voltage(self, sign):
         if not self.manual_voltage_active:
             messagebox.showwarning("Manual Control", "Please start Manual Control first.")
             return
-            
+        
+        delta = 0
         try:
             step = float(self.ent_manual_inc.get())
+            delta = sign * step
         except ValueError:
-            step = 0.05
-        
-        self.adjust_voltage(sign * step)
+            messagebox.showerror("Error", "Invalid step value.")
+            return
+
+        if self.controller_type == 'watlow':
+            with self.serial_lock:
+                current_val = self.watlow_controller.read_float(REG_TEMP_MANUAL_POWER)
+                if current_val is not None:
+                    new_val = max(0.0, min(100.0, current_val + delta))
+                    self.watlow_controller.write_float(REG_TEMP_MANUAL_POWER, new_val)
+                    self.ent_target_voltage.delete(0, tk.END)
+                    self.ent_target_voltage.insert(0, f"{new_val:.2f}")
+        else: # serial
+            self.target_voltage = max(0.0, min(10.0, self.target_voltage + delta))
+            self.ent_target_voltage.delete(0, tk.END)
+            self.ent_target_voltage.insert(0, f"{self.target_voltage:.2f}")
+            with self.serial_lock:
+                self.device_mgr.set_omega_voltage(self.target_voltage)
+            
 
     def set_manual_voltage_direct(self):
         if not self.manual_voltage_active:
@@ -829,75 +957,67 @@ class BaseAPGUI:
             return
         try:
             val = float(self.ent_target_voltage.get())
-            self.target_voltage = max(0.0, min(10.0, val))
-            # Refresh entry in case it was clamped
-            self.ent_target_voltage.delete(0, tk.END)
-            self.ent_target_voltage.insert(0, f"{self.target_voltage:.2f}")
             
-            with self.serial_lock:
-                self.device_mgr.set_omega_voltage(self.target_voltage)
+            if self.controller_type == 'watlow':
+                val = max(0.0, min(100.0, val)) # Clamp 0-100%
+                with self.serial_lock:
+                    self.watlow_controller.write_float(REG_TEMP_MANUAL_POWER, val)
+            else: # serial
+                val = max(0.0, min(10.0, val)) # Clamp 0-10V
+                self.target_voltage = val
+                with self.serial_lock:
+                    self.device_mgr.set_omega_voltage(self.target_voltage)
+
+            self.ent_target_voltage.delete(0, tk.END)
+            self.ent_target_voltage.insert(0, f"{val:.2f}")
         except ValueError:
             messagebox.showerror("Error", "Invalid voltage value.")
 
-    def adjust_voltage(self, delta):
-        """Manually adjusts the target voltage."""
-        self.target_voltage += delta
-        self.target_voltage = max(0.0, min(10.0, self.target_voltage))
-        
-        self.ent_target_voltage.delete(0, tk.END)
-        self.ent_target_voltage.insert(0, f"{self.target_voltage:.2f}")
-        
-        with self.serial_lock:
-            self.device_mgr.set_omega_voltage(self.target_voltage)
-
     def quench_output(self):
-        """Immediately sets output voltage to 0 and stops automation."""
-        self.target_voltage = 0.0
+        """Immediately sets output to 0 and stops automation."""
+        if self.power_control_active:
+            self.var_auto_power.set(False)
+        if self.manual_voltage_active:
+            self.manual_voltage_active = False
+            self.btn_manual_voltage.config(text="Start Manual Control", bg=self.colors["success"])
+
         self.ent_target_voltage.delete(0, tk.END)
         self.ent_target_voltage.insert(0, "0.00")
         
-        # Disable Auto Power if active
-        if self.power_control_active:
-            self.power_control_active = False
-            self.var_auto_power.set(False)
-            
-        # Force 0V
-        with self.serial_lock:
-            self.device_mgr.set_omega_voltage(0.0)
-        print("QUENCH executed: Output set to 0V")
+        if self.controller_type == 'watlow':
+            with self.serial_lock:
+                self.watlow_controller.write_uint16(REG_TEMP_MODE, 62) # Mode OFF
+            print("QUENCH executed: Watlow loop turned OFF.")
+        else: # serial
+            self.target_voltage = 0.0
+            with self.serial_lock:
+                self.device_mgr.set_omega_voltage(0.0)
+            print("QUENCH executed: Output set to 0V")
 
     def set_all_view(self):
         self.view_mode = "ALL"
         self.update_graph_layout()
         self.redraw_visible_graphs()
 
-    def toggle_maximize(self, view_name):
-        if self.view_mode == "ALL":
-            self.view_mode = "SINGLE"
-            self.current_view = view_name
-        else:
-            self.view_mode = "ALL"
-        self.update_graph_layout()
-        self.redraw_visible_graphs()
-
     def update_graph_layout(self):
         for cv in self.canvases.values():
             cv.pack_forget()
-            
+        
         if self.view_mode == "ALL":
-            for view in ["Temperature", "Pressure", "Power"]:
-                self.canvases[view].pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
-        else:
+            # Grid layout for all three
+            self.graph_container.grid_columnconfigure(0, weight=1)
+            self.graph_container.grid_columnconfigure(1, weight=1)
+            self.graph_container.grid_rowconfigure(0, weight=1)
+            self.graph_container.grid_rowconfigure(1, weight=1)
+            
+            self.canvases["Temperature"].grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=(0, 5))
+            self.canvases["Pressure"].grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=(0, 5))
+            self.canvases["Power"].grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(5, 0))
+        else: # "SINGLE"
+            self.graph_container.grid_forget() # Clear grid config
             self.canvases[self.current_view].pack(fill=tk.BOTH, expand=True)
 
-    def redraw_visible_graphs(self):
-        if self.view_mode == "ALL":
-            for view in ["Temperature", "Pressure", "Power"]:
-                self.draw_single_graph(view)
-        else:
-            self.draw_single_graph(self.current_view)
-
-    def draw_single_graph(self, view_name, event=None):
+    def draw_single_graph(self, view_name):
         canvas = self.canvases[view_name]
         canvas.delete("all")
         
@@ -1100,36 +1220,51 @@ class BaseAPGUI:
     def connect_hardware(self):
         """Opens serial ports or enables simulation mode if they fail."""
         in_simulation_mode = False
-
-        # Attempt to open device manager port
-        if self.device_mgr.open():
-            print("Device manager port opened successfully.")
-            # Initialize meters based on ModuleAP10.bas
-            self.device_mgr.initialize_texmate_meters()
-        else:
-            print("Failed to open device manager port. Enabling simulation for devices.")
-            self.device_mgr.enable_simulation()
-            in_simulation_mode = True
         
-        # print("DAX connection disabled. Enabling simulation for devices.")
-        # self.device_mgr.enable_simulation()
-        # in_simulation_mode = True
-            
-        # Attempt to open motor port as well
+        if self.controller_type == 'watlow':
+            connection_successful = False
+            while not connection_successful:
+                self.watlow_controller = WatlowF4T(ip=self.watlow_ip_address)
+                if self.watlow_controller.connect():
+                    print(f"Successfully connected to Watlow F4T at {self.watlow_ip_address}")
+                    connection_successful = True
+                else:
+                    # Connection failed, show dialog to get user action
+                    dialog = WatlowIPDialog(self.root, self.watlow_ip_address)
+                    
+                    if dialog.action == 'retry':
+                        self.watlow_ip_address = dialog.new_ip
+                        # Loop will continue and try to connect with the new IP
+                    elif dialog.action == 'simulate':
+                        self.watlow_controller.enable_simulation()
+                        in_simulation_mode = True
+                        messagebox.showinfo("Simulation Mode", "Watlow controller will be simulated.")
+                        connection_successful = True # Exit the loop
+                    else: # 'cancel' or window closed
+                        self.root.destroy()
+                        return
+
+        elif self.controller_type == 'serial':
+            if self.device_mgr.open():
+                print("Device manager port opened successfully.")
+                self.device_mgr.initialize_texmate_meters()
+            else:
+                print("Failed to open device manager port. Enabling simulation for devices.")
+                self.device_mgr.enable_simulation()
+                in_simulation_mode = True
+        
         if self.motor_mgr.open():
             print("Motor/Valve port opened successfully.")
         else:
             print("Failed to open Motor/Valve port. Enabling simulation for motors.")
             self.motor_mgr.enable_simulation()
             in_simulation_mode = True
-        
-        # print("DAX (Motor/Valve) connection disabled. Enabling simulation for motors.")
-        # self.motor_mgr.enable_simulation()
-        # in_simulation_mode = True
 
         # If any port failed, open the developer console to show simulated traffic
         if in_simulation_mode:
             self.open_developer_mode()
+
+        self.update_ui_for_controller()
 
         # Start the polling loop, which will now work in either real or simulated mode
         self.polling_active = True
@@ -1143,31 +1278,29 @@ class BaseAPGUI:
         """Background thread to handle blocking serial I/O."""
         while self.polling_active:
             data_snapshot = {}
-            port_mapping = [1, 2, 3, 4, 5]
             
-            # Read all ports
-            for port in port_mapping:
-                val_str = "---"
-                with self.serial_lock:
-                    if port == 5:
-                        # Omega Device
-                        resp = self.device_mgr.send_omega_cmd("$1RD")
-                        if resp and len(resp) >= 3:
-                            val_str = resp[2:]
-                    else:
-                        # Texmate Devices
-                        resp = self.device_mgr.send_texmate_cmd(port, "SR")
-                        if resp:
-                            val_str = resp
-                
-                data_snapshot[port] = val_str
-                # Small delay to ensure Mux is ready for next command
-                time.sleep(0.1)
+            with self.serial_lock:
+                if self.controller_type == 'watlow':
+                    data_snapshot[1] = self.watlow_controller.read_float(REG_TEMP_PV)
+                    data_snapshot[2] = self.watlow_controller.read_float(REG_PRESSURE_PV)
+                    data_snapshot[3] = self.watlow_controller.read_float(REG_VOLTS)
+                    data_snapshot[4] = self.watlow_controller.read_float(REG_AMPS)
+                    data_snapshot[5] = 0.0 # No equivalent for Omega readback
 
-            # Handle Power Control Write (if active)
-            if self.power_control_active:
-                with self.serial_lock:
-                    self.device_mgr.set_omega_voltage(self.target_voltage)
+                elif self.controller_type == 'serial':
+                    port_mapping = [1, 2, 3, 4, 5]
+                    for port in port_mapping:
+                        val_str = "---"
+                        if port == 5:
+                            resp = self.device_mgr.send_omega_cmd("$1RD")
+                            if resp and len(resp) >= 3:
+                                val_str = resp[2:]
+                        else:
+                            resp = self.device_mgr.send_texmate_cmd(port, "SR")
+                            if resp:
+                                val_str = resp
+                        data_snapshot[port] = val_str
+                        time.sleep(0.1)
 
             # Send data to UI
             self.data_queue.put(data_snapshot)
@@ -1203,10 +1336,10 @@ class BaseAPGUI:
                 # Parse values for control loop (Port 3=Volts, Port 4=Amps)
                 try:
                     # Handle simulation or raw strings
-                    if "OVER" in val_str:
+                    if "OVER" in str(val_str):
                         val = 0.0
                     else:
-                        clean_val = val_str.replace('+', '').replace('SIM_ACK', '0')
+                        clean_val = str(val_str).replace('+', '').replace('SIM_ACK', '0')
                         val = float(clean_val)
                     
                     self.last_valid_readings[port] = val
@@ -1215,7 +1348,7 @@ class BaseAPGUI:
                     if port == 2: meas_press = val
                     if port == 3: meas_volts = val
                     if port == 4: meas_amps = val
-                except ValueError:
+                except (ValueError, TypeError):
                     pass
             
         # Calculate Power
@@ -1229,9 +1362,7 @@ class BaseAPGUI:
 
         # Pressure Control Loop (Profile Execution)
         if self.pressure_control_active and self.pressure_profile:
-            # Calculate elapsed time in hours
             elapsed_hours = (time.time() - self.start_time) / 3600.0
-            
             target_pressure = 0.0
             accumulated_time = 0.0
             active_segment = None
@@ -1239,9 +1370,7 @@ class BaseAPGUI:
             for segment in self.pressure_profile:
                 duration = segment['duration']
                 if elapsed_hours < (accumulated_time + duration):
-                    # We are in this segment
                     time_in_seg = elapsed_hours - accumulated_time
-                    # Linear interpolation: Start + (Rate * Time)
                     target_pressure = segment['start'] + (segment['rate'] * time_in_seg)
                     active_segment = segment
                     break
@@ -1251,6 +1380,11 @@ class BaseAPGUI:
                 print("Pressure Profile Completed.")
                 self.pressure_control_active = False
                 self.var_auto_press.set(False)
+            elif self.controller_type == 'watlow':
+                with self.serial_lock:
+                    if self.watlow_controller.read_uint16(REG_PRESSURE_MODE) != 10:
+                        self.watlow_controller.write_uint16(REG_PRESSURE_MODE, 10)
+                    self.watlow_controller.write_float(REG_PRESSURE_SP, target_pressure)
 
         # Temperature Control Loop (Profile Execution)
         if self.temp_control_active and self.temperature_profile:
@@ -1270,7 +1404,11 @@ class BaseAPGUI:
                 print("Temperature Profile Completed.")
                 self.temp_control_active = False
                 self.var_auto_temp.set(False)
-            # Note: Actual PID control for temp not implemented, just profile calculation
+            elif self.controller_type == 'watlow':
+                with self.serial_lock:
+                    if self.watlow_controller.read_uint16(REG_TEMP_MODE) != 10:
+                        self.watlow_controller.write_uint16(REG_TEMP_MODE, 10)
+                    self.watlow_controller.write_float(REG_TEMP_SP, target_temp)
 
         # Power Control Loop (Profile Execution)
         if self.power_control_active and self.power_profile:
@@ -1294,32 +1432,25 @@ class BaseAPGUI:
                 self.target_power_watts = target_power
         
         if self.recording_active:
-            # 1. Display Update (Graphing) - Every 1 second
             if (current_time - self.last_display_update_time) >= 1.0:
                 self.last_display_update_time = current_time
-                # Update History
                 timestamp = time.time() - self.start_time
                 self.data_history["Temperature"].append((timestamp, meas_temp))
                 self.data_history["Pressure"].append((timestamp, meas_press))
                 self.data_history["Power"].append((timestamp, current_power))
                 
-                # Keep history manageable (e.g., last 7200 points. At 1 sec/point, this is 2 hours)
                 for key in self.data_history:
                     if len(self.data_history[key]) > 7200:
                         self.data_history[key].pop(0)
                 
-                # Refresh Graph
                 self.redraw_visible_graphs()
 
-            # 2. Write to File (Check Interval)
             if (current_time - self.last_file_save_time) >= (self.save_interval_min * 60):
                 try:
-                    file_timestamp = datetime.datetime.now().strftime("%m/%d/%Y %H:%M:%S")
                     now = datetime.datetime.now()
                     log_date = now.strftime("%m/%d/%Y")
                     log_time = now.strftime("%H:%M:%S")
                     with open(self.csv_filename, "a") as f:
-                        line = f"{file_timestamp},{meas_temp:.2f},{meas_press:.2f},{meas_volts:.2f},{meas_amps:.2f},{current_power:.2f},{meas_res:.4f}\n"
                         line = f"{log_date},{log_time},{meas_temp:.2f},{meas_press:.2f},{meas_volts:.2f},{meas_amps:.2f},{current_power:.2f},{meas_res:.4f}\n"
                         f.write(line)
                     self.last_file_save_time = current_time
@@ -1336,18 +1467,25 @@ class BaseAPGUI:
 
         # Power Control Loop
         if self.power_control_active:
-            error = self.target_power_watts - current_power
-            # Simple Integral Control: Adjust voltage by a small fraction of the error
-            # Gain K = 0.01 (Conservative starting point)
-            adjustment = error * 0.01
-            
-            # Apply adjustment
-            self.target_voltage += adjustment
-            
-            # Clamp to safe limits (0-10V)
-            self.target_voltage = max(0.0, min(10.0, self.target_voltage))
-            
-            # Note: The background thread handles the actual writing of self.target_voltage
+            if self.controller_type == 'watlow':
+                with self.serial_lock:
+                    if self.watlow_controller.read_uint16(REG_TEMP_MODE) != 54:
+                        self.watlow_controller.write_uint16(REG_TEMP_MODE, 54)
+                    
+                    # Simple P-control to match target power by adjusting % output
+                    error = self.target_power_watts - current_power
+                    adjustment = error * 0.01 # Proportional gain (needs tuning)
+                    
+                    current_pwr_pct = self.watlow_controller.read_float(REG_TEMP_MANUAL_POWER)
+                    if current_pwr_pct is not None:
+                        new_pwr_pct = max(0.0, min(100.0, current_pwr_pct + adjustment))
+                        self.watlow_controller.write_float(REG_TEMP_MANUAL_POWER, new_pwr_pct)
+            else: # serial
+                error = self.target_power_watts - current_power
+                adjustment = error * 0.01
+                self.target_voltage = max(0.0, min(10.0, self.target_voltage + adjustment))
+                with self.serial_lock:
+                    self.device_mgr.set_omega_voltage(self.target_voltage)
 
         # Update Status Bar
         self.update_system_status()
@@ -1355,6 +1493,16 @@ class BaseAPGUI:
         # Schedule next update
         if self.polling_active:
             self.root.after(100, self.update_gui_loop)
+
+    def update_ui_for_controller(self):
+        """Disables UI elements that are not compatible with the selected controller."""
+        if self.controller_type == 'watlow':
+            self.btn_thermocouple_config.config(state="disabled")
+            # Update labels for manual control
+            tk.Label(self.ent_target_voltage.master, text="Output (%):", bg=self.colors["card"], fg="white", font=("Arial", 12)).pack(side=tk.LEFT)
+        else:
+            self.btn_thermocouple_config.config(state="normal")
+            tk.Label(self.ent_target_voltage.master, text="Output (V):", bg=self.colors["card"], fg="white", font=("Arial", 12)).pack(side=tk.LEFT)
 
     def update_voltage_state(self, new_voltage):
         """Callback to update target voltage from Manual Control Dialog."""
@@ -1373,8 +1521,11 @@ class BaseAPGUI:
         
         if self.power_control_active:
             states.append("AUTO POWER")
-        elif self.target_voltage > 0.0:
-            states.append(f"MANUAL ({self.target_voltage:.2f}V)")
+        elif self.manual_voltage_active:
+            if self.controller_type == 'watlow':
+                states.append(f"MANUAL PWR")
+            else:
+                states.append(f"MANUAL ({self.target_voltage:.2f}V)")
             
         if self.temp_control_active:
             states.append("AUTO TEMP")
@@ -1439,7 +1590,7 @@ class BaseAPGUI:
 
     def open_system_controls(self):
         """Opens the System Controls Dialog."""
-        SystemControlsDialog(self.root, self.device_mgr, self.motor_mgr, self.serial_lock)
+        SystemControlsDialog(self.root, self.device_mgr, self.motor_mgr, self.serial_lock, self.controller_type)
 
     def open_developer_mode(self):
         """Opens the debug window and sets log callbacks."""
@@ -1457,18 +1608,19 @@ class BaseAPGUI:
             self.debug_win.log("Developer Mode Enabled.")
 
             # If already in simulation, add a note to the log.
-            if self.device_mgr.simulated or self.motor_mgr.simulated:
+            if self.device_mgr.simulated or self.motor_mgr.simulated or (self.watlow_controller and self.watlow_controller.simulated):
                 self.debug_win.log("NOTE: Running in Simulation Mode due to port connection failure on startup.")
 
     def cleanup_and_exit(self):
         self.polling_active = False
-        self.device_mgr.close()
+        if self.controller_type == 'watlow' and self.watlow_controller:
+            self.watlow_controller.client.close() if self.watlow_controller.client else None
+        else:
+            self.device_mgr.close()
         self.motor_mgr.close()
         self.root.quit()
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = BaseAPGUI(root)
-    root.mainloop()
     app = BaseAPGUI(root)
     root.mainloop()

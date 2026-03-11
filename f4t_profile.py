@@ -107,28 +107,32 @@ class F4TApp:
         # Connection Frame
         c_fr = ttk.LabelFrame(self.root, text="F4T Network", padding=5)
         c_fr.pack(fill="x", padx=10, pady=5)
+
         self.ip_var = tk.StringVar(value="192.168.0.222")
         ttk.Entry(c_fr, textvariable=self.ip_var, width=15).pack(side="left", padx=5)
         ttk.Button(c_fr, text="Connect", command=self.toggle_connect).pack(side="left")
         self.status_label = ttk.Label(c_fr, text="Disconnected", foreground="red")
         self.status_label.pack(side="left", padx=10)
 
+
         # Control Frame
         ctrl_fr = ttk.Frame(self.root, padding=5)
         ctrl_fr.pack(fill="x")
+
         ttk.Button(ctrl_fr, text="▶ START", command=self.run_profile).pack(side="left", padx=5)
         ttk.Button(ctrl_fr, text="⏹ STOP", command=self.stop_profile).pack(side="left", padx=5)
+
         self.engine_label = ttk.Label(ctrl_fr, text="Engine: --")
         self.engine_label.pack(side="right", padx=10)
         self.step_info = ttk.Label(ctrl_fr, text="F4T Step: --")
         self.step_info.pack(side="right", padx=10)
+
 
         # Main Layout
         panes = ttk.PanedWindow(self.root, orient="horizontal")
         panes.pack(fill="both", expand=True)
         self.s_fr = ttk.LabelFrame(panes, text="Editor"); panes.add(self.s_fr, weight=1)
         self.c_fr = ttk.LabelFrame(panes, text="Chart"); panes.add(self.c_fr, weight=2)
-
         self.fig, self.ax = plt.subplots(figsize=(4, 3))
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.c_fr)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -138,6 +142,7 @@ class F4TApp:
         self.steps_cont = ttk.Frame(self.s_fr); self.steps_cont.pack(fill="both")
         
         self.refresh_ui()
+
 
     def add_step(self):
         self.profiles[self.current_profile_name].append({'type': 'Soak', 'value': 25.0, 'mins': 10})
@@ -175,5 +180,7 @@ class F4TApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
+    root.geometry("1200x700")
+    root.title("Watlow F4T Interface")
     F4TApp(root)
     root.mainloop() # Start the GUI event loop

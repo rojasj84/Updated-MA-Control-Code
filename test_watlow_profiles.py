@@ -21,6 +21,7 @@ APCE_SETPOINT_1_OFFSET = 20
 MAX_PROFILE_STEPS = 50
 
 APCE_EDIT_ACTION_EDIT = 1770
+APCE_EDIT_ACTION_CLEAR = 129
 APCE_STEP_EDIT_ACTION_OFFSET = 84
 
 STEP_TYPE_NAMES = {
@@ -266,6 +267,7 @@ class ProfileManagerApp:
         self.args = args
         self.controller = WatlowF4T(ip=args.ip, port=args.port, slave_id=args.slave_id)
         self.root = tk.Tk()
+
         self.root.title("Watlow F4T Profile Manager")
         self.root.geometry("1200x760")
 
@@ -274,6 +276,8 @@ class ProfileManagerApp:
         self.slave_var = tk.StringVar(value=str(args.slave_id))
         self.profile_var = tk.IntVar(value=args.profile)
         self.loop_var = tk.IntVar(value=args.loop)
+
+        self.profile_name_var = tk.StringVar(value="Profile 1")
         self.status_var = tk.StringVar(value="Disconnected")
         self.current_pressure = 0.0
         self.steps = []
@@ -301,6 +305,9 @@ class ProfileManagerApp:
         for column in range(10):
             top.columnconfigure(column, weight=1)
 
+        ttk.Entry(top, textvariable=self.profile_name_var).grid(row=1, column=9, padx=4, sticky = "ew")
+        ttk.Label(top, text="Profile Name").grid(row=0, column=9, sticky="w")
+        ttk.Entry(top, textvariable=self.profile_name_var).grid(row=1, column=9, padx=4, sticky = "ew")
         ttk.Label(top, text="IP").grid(row=0, column=0, sticky="w")
         ttk.Entry(top, textvariable=self.ip_var, width=14).grid(row=1, column=0, padx=4, sticky="ew")
         ttk.Label(top, text="Port").grid(row=0, column=1, sticky="w")
@@ -315,7 +322,8 @@ class ProfileManagerApp:
         ttk.Button(top, text="Load Profile", command=self.load_profile).grid(row=1, column=6, padx=4, sticky="ew")
         ttk.Button(top, text="New Profile", command=self.new_profile).grid(row=1, column=7, padx=4, sticky="ew")
         ttk.Button(top, text="Upload Profile", command=self.upload_profile).grid(row=1, column=8, padx=4, sticky="ew")
-        ttk.Label(top, textvariable=self.status_var).grid(row=1, column=9, padx=4, sticky="e")
+        ttk.Label(top, text="Profile Name").grid(row=0, column=9, sticky="w")
+        ttk.Label(top, textvariable=self.status_var).grid(row=0, column=8, padx=4, sticky="e")
 
         left = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         left.grid(row=1, column=0, sticky="nsew")
@@ -423,13 +431,29 @@ class ProfileManagerApp:
         self.refresh_chart()
 
     def new_profile(self):
-        self.steps = [
-            {"step_number": 1, "step_type": 1928, "step_type_name": "Ramp Time", "end": self.current_pressure, "duration": 10.0},
-            {"step_number": 2, "step_type": 87, "step_type_name": "Soak", "end": self.current_pressure, "duration": 10.0},
-            {"step_number": 3, "step_type": 27, "step_type_name": "End", "end": self.current_pressure, "duration": 0.0},
-        ]
-        self.refresh_tree()
-        self.refresh_chart()
+        if not self.connect_controller():
+            return
+
+        profile_id = self.profile_var.get()
+        if not messagebox.askyesno(
+            "Confirm New Profile",
+            f"This will clear all steps from Profile {profile_id} on the controller.\n\nAre you sure you want to continue?",
+            parent=self.root,
+        ):
+            return
+
+        registers = get_step_registers(profile_id, self.loop_var.get())
+
+        if not self.controller.write_uint16(registers["profile_number"], profile_id):
+            messagebox.showerror("Error", "Failed to select profile.", parent=self.root)
+            return
+
+        if not self.controller.write_uint16(registers["profile_edit_action"], APCE_EDIT_ACTION_CLEAR):
+            messagebox.showerror("Error", "Failed to clear profile.", parent=self.root)
+            return
+
+        messagebox.showinfo("Success", f"Profile {profile_id} cleared.", parent=self.root)
+        self.load_profile()
 
     def upload_profile(self):
         if not self.connect_controller():
@@ -613,4 +637,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     raise SystemExit(main())

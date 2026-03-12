@@ -7,17 +7,23 @@ from pymodbus.client import ModbusTcpClient
 class F4TApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Watlow F4T Master - Fully Editable")
+        self.root.title("Watlow F4T Master - Final Configuration")
         
+        # Step Type Mapping
         self.type_map = {
             87: "Soak", 1928: "Ramp Time", 81: "Ramp Rate", 
             1542: "Wait For", 1927: "Instant Change", 116: "Jump", 27: "End"
         }
         self.name_to_code = {v: k for k, v in self.type_map.items()}
         
+        # End Step Actions (Now mapped to 19340)
+        self.end_actions = {0: "Off", 1: "User", 2: "Hold"}
+        self.name_to_end = {v: k for k, v in self.end_actions.items()}
+        
         self.poll_job = None
         self.setup_ui()
         
+        # Original Connection
         self.client = ModbusTcpClient("10.4.11.144", port=502, timeout=2)
         if self.client.connect():
             self.status_label.config(text="Status: Connected", foreground="green")
@@ -41,43 +47,38 @@ class F4TApp:
         self.status_label = ttk.Label(top, text="Connecting..."); self.status_label.pack(side="right")
         
         table_frame = tk.Frame(self.root); table_frame.pack(pady=10, fill="both", expand=True, padx=10)
-        self.cols = ("Step", "Type", "Target", "Duration", "RampRate")
+        self.cols = ("Step", "Type", "Target/Action", "Duration", "RampRate")
         self.tree = ttk.Treeview(table_frame, columns=self.cols, show="headings", height=12)
         
-        self.tree.heading("Step", text="Step #")
-        self.tree.heading("Type", text="Type")
-        self.tree.heading("Target", text="Setpoint")
-        self.tree.heading("Duration", text="Time (H:M:S)")
-        self.tree.heading("RampRate", text="Ramp Rate")
-        
-        for col in self.cols: self.tree.column(col, width=110, anchor="center")
+        for col in self.cols: self.tree.heading(col, text=col); self.tree.column(col, width=120, anchor="center")
         self.tree.pack(side="left", fill="both", expand=True)
-
         self.tree.bind("<Button-1>", self.on_table_click)
+        
         self.log_box = tk.Text(self.root, height=5, bg="#f0f0f0", font=('Consolas', 9))
         self.log_box.pack(fill="x", padx=10, pady=5)
 
     def on_table_click(self, event):
-        """Universal cell editor launcher"""
         if hasattr(self, 'active_editor') and self.active_editor.winfo_exists():
             self.active_editor.destroy()
-
         region = self.tree.identify_region(event.x, event.y)
         if region != "cell": return
-        
         column = self.tree.identify_column(event.x)
         item_id = self.tree.identify_row(event.y)
-        col_idx = int(column[1:]) - 1  # Convert #1, #2 to 0, 1...
-        
-        if col_idx == 0: return # Step # is read-only
+        col_idx = int(column[1:]) - 1 
+        if col_idx == 0: return 
         
         x, y, width, height = self.tree.bbox(item_id, column)
-        current_val = self.tree.item(item_id, "values")[col_idx]
+        row_values = self.tree.item(item_id, "values")
+        current_type = row_values[1]
+        current_val = row_values[col_idx]
 
-        if col_idx == 1: # Type Column -> Combobox
+        if col_idx == 1: # TYPE
             self.active_editor = ttk.Combobox(self.tree, values=list(self.name_to_code.keys()), state="readonly")
             self.active_editor.bind("<<ComboboxSelected>>", lambda e: self.finish_edit(item_id, col_idx))
-        else: # Other Columns -> Entry
+        elif col_idx == 2 and current_type == "End": # ACTION (Register 19340)
+            self.active_editor = ttk.Combobox(self.tree, values=list(self.name_to_end.keys()), state="readonly")
+            self.active_editor.bind("<<ComboboxSelected>>", lambda e: self.finish_edit(item_id, col_idx))
+        else: # Standard Entry
             self.active_editor = ttk.Entry(self.tree)
             self.active_editor.insert(0, "" if current_val == "--" else current_val)
             self.active_editor.bind("<Return>", lambda e: self.finish_edit(item_id, col_idx))
@@ -90,37 +91,6 @@ class F4TApp:
     def on_focus_out(self, event):
         if time.time() - self.editor_init_time > 0.4:
             if hasattr(self, 'active_editor'): self.active_editor.destroy()
-
-    def finish_edit(self, item_id, col_idx):
-        try:
-            val = self.active_editor.get()
-            step_num = int(self.tree.item(item_id, "values")[0])
-            self.safe_write(18924, step_num) # Select Step
-            
-            if col_idx == 1: # TYPE
-                self.safe_write(18926, self.name_to_code[val])
-            
-            elif col_idx == 2: # SETPOINT (Float)
-                self.write_f4t_float(18946, float(val))
-            
-            elif col_idx == 3: # DURATION (H:M:S)
-                h, m, s = map(int, val.split(':'))
-                self.safe_write(18928, h); self.safe_write(18930, m); self.safe_write(18932, s)
-            
-            elif col_idx == 4: # RAMP RATE (Float)
-                self.write_f4t_float(18938, float(val))
-
-            self.log(f"Step {step_num} updated.")
-            if hasattr(self, 'active_editor'): self.active_editor.destroy()
-            self.root.after(400, self.fetch_profile_table)
-        except Exception as e:
-            messagebox.showerror("Input Error", f"Invalid format: {e}")
-
-    def write_f4t_float(self, reg, value):
-        packed = struct.pack('>f', value)
-        regs = struct.unpack('>HH', packed)
-        # F4T Word Swap: Low word, then High word
-        self.client.write_registers(reg, [regs[1], regs[0]])
 
     def safe_read(self, reg, count):
         try: return self.client.read_holding_registers(reg, count=count)
@@ -135,6 +105,11 @@ class F4TApp:
         raw = struct.pack('>HH', regs[1], regs[0])
         return struct.unpack('>f', raw)[0]
 
+    def write_f4t_float(self, reg, value):
+        packed = struct.pack('>f', value)
+        regs = struct.unpack('>HH', packed)
+        self.client.write_registers(reg, [regs[1], regs[0]])
+
     def read_profile_name(self):
         res = self.safe_read(16886, 20)
         if res and hasattr(res, 'registers'):
@@ -143,8 +118,6 @@ class F4TApp:
 
     def write_profile_name_only(self):
         name_str = self.name_var.get()
-        self.safe_write(18888, 1) 
-        time.sleep(0.1)
         registers = [ord(c) for c in name_str[:20]]
         while len(registers) < 20: registers.append(32)
         self.client.write_registers(16886, values=registers)
@@ -155,20 +128,62 @@ class F4TApp:
         if not res or res.isError(): return
         total_steps = res.registers[0]
         for item in self.tree.get_children(): self.tree.delete(item)
+        
         for i in range(total_steps):
             step_num = i + 1
-            self.safe_write(18924, step_num)
-            time.sleep(0.04) 
-            data = self.safe_read(18926, 22)
+            self.safe_write(18924, step_num) 
+            time.sleep(0.06) 
+            
+            data = self.safe_read(18926, 24)
             if data and not data.isError():
                 r = data.registers
-                t_val, t_name = r[0], self.type_map.get(r[0], f"Code {r[0]}")
+                t_val = r[0]
+                t_name = self.type_map.get(t_val, f"Code {t_val}")
+                
+                if t_val == 27:
+                    # Reading End Action from 19340
+                    action_res = self.safe_read(19340, 1)
+                    a_code = action_res.registers[0] if action_res else 0
+                    target_disp = self.end_actions.get(a_code, "Off")
+                else:
+                    target_disp = f"{self.decode_f4t_float(r[20:22]):.1f}"
+                
                 duration = f"{r[2]:02}:{r[4]:02}:{r[6]:02}"
-                rate, target = self.decode_f4t_float(r[12:14]), self.decode_f4t_float(r[20:22])
+                rate = self.decode_f4t_float(r[12:14])
                 d_rate = f"{rate:.1f}" if t_val == 81 else "--"
-                d_target = f"{target:.1f}" if t_val in [87, 1928, 81, 1927] else "--"
                 d_dur = duration if t_val in [87, 1928, 81] else "--"
-                self.tree.insert("", "end", values=(step_num, t_name, d_target, d_dur, d_rate))
+                
+                self.tree.insert("", "end", values=(step_num, t_name, target_disp, d_dur, d_rate))
+
+    def finish_edit(self, item_id, col_idx):
+        try:
+            val = self.active_editor.get()
+            row_vals = self.tree.item(item_id, "values")
+            step_num = int(row_vals[0])
+            current_type = row_vals[1]
+
+            self.safe_write(18924, step_num) 
+            time.sleep(0.05)
+
+            if col_idx == 1:
+                self.safe_write(18926, self.name_to_code[val])
+            elif col_idx == 2:
+                if current_type == "End": 
+                    # Writing End Action to 19340
+                    self.safe_write(19340, self.name_to_end[val])
+                else: 
+                    self.write_f4t_float(18946, float(val))
+            elif col_idx == 3:
+                h, m, s = map(int, val.split(':'))
+                self.safe_write(18928, h); self.safe_write(18930, m); self.safe_write(18932, s)
+            elif col_idx == 4:
+                self.write_f4t_float(18938, float(val))
+
+            self.log(f"Step {step_num} updated.")
+            if hasattr(self, 'active_editor'): self.active_editor.destroy()
+            self.root.after(400, self.fetch_profile_table)
+        except Exception as e:
+            messagebox.showerror("Input Error", f"Invalid format: {e}")
 
     def log(self, msg):
         self.log_box.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n"); self.log_box.see("end")

@@ -7,6 +7,7 @@ import queue
 import time
 import os
 import datetime
+import struct
 from device_comm import DeviceManager, MotorValveController
 from Watlow import WatlowF4T
 from Watlow import (
@@ -14,6 +15,56 @@ from Watlow import (
     REG_PRESSURE_PV, REG_PRESSURE_SP, REG_PRESSURE_MANUAL_POWER, REG_PRESSURE_MODE,
     REG_VOLTS, REG_AMPS
 )
+try:
+    from pymodbus.client import ModbusTcpClient as _ModbusTcpClient
+    HAS_PYMODBUS = True
+except ImportError:
+    HAS_PYMODBUS = False
+
+# ---------------------------------------------------------------------------
+# F4T Profile Register Map (Profile Step Edit Block, APCE class 80)
+# Shared registers (same address regardless of loop)
+# ---------------------------------------------------------------------------
+_F4T_TYPE_MAP = {
+    87: "Soak", 1928: "Ramp Time", 81: "Ramp Rate",
+    1542: "Wait For", 1927: "Instant Change", 116: "Jump", 27: "End"
+}
+# Profile-level (file) management
+_REG_PROF_NUMBER     = 18888   # Profile Number to work with (write 1 = Profile 1)
+_REG_PROF_FILE_ACT   = 18890   # Profile File Action: Edit=1770, Add=1375, Delete=1772
+
+# Step-level management
+_REG_PROF_NUM_STEPS  = 18920   # Number of steps in profile (read)
+_REG_PROF_EDIT_ACT   = 18922   # Step Edit Action: Edit=1770, Add=1375, Insert=1771, Delete=1772
+_REG_PROF_STEP_SEL   = 18924   # Current Step Number selector
+_REG_PROF_STEP_TYPE  = 18926   # Step Type enum
+_REG_PROF_TIME_H     = 18928   # Step Time Hours
+_REG_PROF_TIME_M     = 18930   # Step Time Minutes
+_REG_PROF_TIME_S     = 18932   # Step Time Seconds
+_REG_PROF_ACTION     = 18910   # Profile Action register (1782 = Start)
+
+# Loop 1 (Temperature) – read 22 registers from 18926, offsets within that block
+_REG_PROF_RATE1      = 18938   # Step Rate 1  (Loop 1 ramp rate,  IEEE float, offset 12)
+_REG_PROF_SP1        = 18946   # Step Set Point 1 (Loop 1 setpoint, IEEE float, offset 20)
+_REG_PROF_END_ACT1   = 19030   # End Step Loop Action 1 (Loop 1)
+
+# Loop 2 (Pressure) – read 24 registers from 18926, offsets within that block
+_REG_PROF_RATE2      = 18940   # Step Rate 2  (Loop 2 ramp rate,  IEEE float, offset 14)
+_REG_PROF_SP2        = 18948   # Step Set Point 2 (Loop 2 setpoint, IEEE float, offset 22)
+_REG_PROF_END_ACT2   = 19032   # End Step Loop Action 2 (Loop 2)
+
+def _decode_f4t_float(regs):
+    """Decode a word-swapped IEEE float from two Modbus registers."""
+    if len(regs) < 2:
+        return 0.0
+    raw = struct.pack('>HH', regs[1], regs[0])
+    return struct.unpack('>f', raw)[0]
+
+def _encode_f4t_float(value):
+    """Encode a float into [low_word, high_word] for F4T write."""
+    packed = struct.pack('>f', value)
+    hw, lw = struct.unpack('>HH', packed)
+    return [lw, hw]
 
 try:
     from PIL import Image, ImageTk, ImageDraw
@@ -207,87 +258,374 @@ class ZeroPressureDialog:
             messagebox.showerror("Error", msg, parent=self.top)
 
 class ProfileEditorDialog:
-    def __init__(self, master, profile, on_save, title="Profile Editor", value_label="Pressure (Bars)", rate_label="Rate (Bars/Hr)"):
+    # Tolerance for treating start == end as a Soak (handles float repr noise)
+    _SOAK_EPSILON = 1e-4
+
+    # F4T step type codes
+    _TYPE_CODES    = {"Soak": 87, "Ramp Time": 1928, "Ramp Rate": 81}
+    _END_ACT_CODES = {"User": 100, "Off": 62, "Hold": 47}
+
+    def __init__(self, master, profile, on_save, title="Profile Editor",
+                 value_label="Pressure (Bars)", rate_label="Rate (Bars/Hr)",
+                 f4t_ip=None, f4t_connected=False, loop=2):
+        """
+        f4t_ip        : IP string for live F4T Modbus commands (None = offline)
+        f4t_connected : True when a real (non-simulated) F4T is reachable
+        loop          : 1 = Temperature (Loop 1), 2 = Pressure (Loop 2)
+        """
         self.top = tk.Toplevel(master)
         self.top.title(title)
-        self.top.geometry("600x450")
-        # Work on a copy of the profile so we can cancel if needed
-        self.profile = list(profile) 
+        self.top.geometry("820x560")
+        self.profile = list(profile)
         self.on_save = on_save
         self.value_label = value_label
         self.rate_label = rate_label
-        
+        self.f4t_ip = f4t_ip
+        self.f4t_connected = f4t_connected and HAS_PYMODBUS and f4t_ip is not None
+        self.loop = loop   # 1 = temp (Loop 1), 2 = pressure (Loop 2)
+
+        # Track which field was last edited
+        self._last_edited = None   # "duration" | "rate" | None
+
+        # Pull the End-action sentinel out of the profile if present
+        initial_end_action = "User"
+        if self.profile and self.profile[-1].get("step_type") == "End":
+            initial_end_action = self.profile[-1].get("end_action", "User")
+            self.profile = self.profile[:-1]
+
         # --- Input Fields ---
         input_frame = tk.LabelFrame(self.top, text="New Segment", padx=10, pady=10, font=("Arial", 10))
         input_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+
         tk.Label(input_frame, text=f"Start {self.value_label}:", font=("Arial", 10)).grid(row=0, column=0)
         self.ent_start = tk.Entry(input_frame, width=10, font=("Arial", 10))
         self.ent_start.grid(row=1, column=0, padx=5)
-        
+
         tk.Label(input_frame, text=f"Final {self.value_label}:", font=("Arial", 10)).grid(row=0, column=1)
         self.ent_end = tk.Entry(input_frame, width=10, font=("Arial", 10))
         self.ent_end.grid(row=1, column=1, padx=5)
-        
+
         tk.Label(input_frame, text="Duration (hours):", font=("Arial", 10)).grid(row=0, column=2)
         self.ent_duration = tk.Entry(input_frame, width=10, font=("Arial", 10))
         self.ent_duration.grid(row=1, column=2, padx=5)
-        
-        tk.Button(input_frame, text="Add Segment", command=self.add_segment, font=("Arial", 10)).grid(row=1, column=3, padx=10)
+
+        tk.Label(input_frame, text=self.rate_label + ":", font=("Arial", 10)).grid(row=0, column=3)
+        self.ent_rate = tk.Entry(input_frame, width=10, font=("Arial", 10))
+        self.ent_rate.grid(row=1, column=3, padx=5)
+
+        tk.Button(input_frame, text="Add Segment", command=self.add_segment,
+                  font=("Arial", 10)).grid(row=1, column=4, padx=10)
+
+        self.lbl_step_type_hint = tk.Label(input_frame, text="", font=("Arial", 9, "italic"), fg="#555555")
+        self.lbl_step_type_hint.grid(row=2, column=0, columnspan=5, pady=(4, 0), sticky="w")
+
+        # Auto-fill bindings
+        self.ent_duration.bind("<FocusOut>", self._on_duration_focusout)
+        self.ent_rate.bind("<FocusOut>",     self._on_rate_focusout)
+        self.ent_duration.bind("<Return>",   self._on_duration_focusout)
+        self.ent_rate.bind("<Return>",       self._on_rate_focusout)
+        self.ent_start.bind("<FocusOut>", self._on_value_changed)
+        self.ent_end.bind("<FocusOut>",   self._on_value_changed)
+
+        # --- End Action dropdown ---
+        end_frame = tk.LabelFrame(self.top, text="Profile End Action  (sent to F4T End step)",
+                                  padx=10, pady=8, font=("Arial", 10))
+        end_frame.pack(fill=tk.X, padx=10, pady=(0, 4))
+
+        tk.Label(end_frame, text="When profile completes:", font=("Arial", 10)).pack(side=tk.LEFT, padx=(0, 8))
+
+        self.end_action_var = tk.StringVar(value=initial_end_action)
+        self.cmb_end_action = ttk.Combobox(
+            end_frame, textvariable=self.end_action_var,
+            values=["User", "Off", "Hold"], state="readonly",
+            width=7, font=("Arial", 10))
+        self.cmb_end_action.pack(side=tk.LEFT)
+
+        tk.Label(end_frame,
+                 text="    User = resume manual control     Off = output off     Hold = hold last setpoint",
+                 font=("Arial", 9, "italic"), fg="#444444").pack(side=tk.LEFT, padx=6)
+
+        # Live-F4T status indicator
+        f4t_status = "Live F4T: CONNECTED" if self.f4t_connected else "Live F4T: offline (upload on Save)"
+        f4t_color  = "#007700" if self.f4t_connected else "#888888"
+        tk.Label(end_frame, text=f"   [{f4t_status}]",
+                 font=("Arial", 9, "italic"), fg=f4t_color).pack(side=tk.LEFT, padx=6)
 
         # --- List Display ---
         list_frame = tk.Frame(self.top)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        
-        # Style for Treeview
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+
         style = ttk.Style(self.top)
         style.configure("Treeview.Heading", font=("Arial", 10, "bold"))
         style.configure("Treeview", font=("Arial", 10), rowheight=25)
 
-        columns = ("start", "end", "duration", "rate")
-        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=8)
-        self.tree.heading("start", text=f"Start {self.value_label}")
-        self.tree.heading("end", text=f"Final {self.value_label}")
-        self.tree.heading("duration", text="Duration (hours)")
-        self.tree.heading("rate", text=self.rate_label)
-        
-        self.tree.column("start", width=120, anchor="center")
-        self.tree.column("end", width=120, anchor="center")
-        self.tree.column("duration", width=120, anchor="center")
-        self.tree.column("rate", width=120, anchor="center")
-        
+        columns = ("start", "end", "duration", "rate", "step_type")
+        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=7)
+        self.tree.heading("start",     text=f"Start {self.value_label}")
+        self.tree.heading("end",       text=f"Final {self.value_label}")
+        self.tree.heading("duration",  text="Duration (hours)")
+        self.tree.heading("rate",      text=self.rate_label)
+        self.tree.heading("step_type", text="F4T Step Type")
+
+        self.tree.column("start",     width=130, anchor="center")
+        self.tree.column("end",       width=130, anchor="center")
+        self.tree.column("duration",  width=115, anchor="center")
+        self.tree.column("rate",      width=115, anchor="center")
+        self.tree.column("step_type", width=115, anchor="center")
+
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+
         # --- Buttons ---
         btn_frame = tk.Frame(self.top)
-        btn_frame.pack(pady=10)
-        tk.Button(btn_frame, text="Save & Exit", bg="green", fg="white", command=self.save_exit, font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="Clear All", bg="red", fg="white", command=self.clear_all, font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+        btn_frame.pack(pady=8)
+        tk.Button(btn_frame, text="Save & Exit", bg="green", fg="white",
+                  command=self.save_exit, font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Clear All", bg="red", fg="white",
+                  command=self.clear_all, font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
 
         self.refresh_list()
+
+    # ------------------------------------------------------------------
+    # Live F4T helpers
+    # ------------------------------------------------------------------
+
+    def _f4t_client(self):
+        """Open and return a connected ModbusTcpClient, or None."""
+        if not self.f4t_connected:
+            return None
+        try:
+            c = _ModbusTcpClient(self.f4t_ip, port=502, timeout=3)
+            return c if c.connect() else None
+        except Exception as exc:
+            print(f"  ProfileEditor F4T connect error: {exc}")
+            return None
+
+    def _f4t_delete_and_create_profile(self):
+        """Delete Profile 1 on the F4T then immediately re-create it."""
+        client = self._f4t_client()
+        if client is None:
+            return
+        try:
+            # Select profile 1
+            client.write_register(_REG_PROF_NUMBER, value=1)
+            time.sleep(0.05)
+            # Delete
+            client.write_register(_REG_PROF_FILE_ACT, value=1772)
+            time.sleep(0.15)
+            # Re-create (Add)
+            client.write_register(_REG_PROF_NUMBER, value=1)
+            time.sleep(0.05)
+            client.write_register(_REG_PROF_FILE_ACT, value=1375)
+            time.sleep(0.15)
+            print("  F4T Profile 1: deleted and re-created.")
+        except Exception as exc:
+            print(f"  F4T delete/create error: {exc}")
+        finally:
+            client.close()
+
+    def _f4t_add_step(self, seg):
+        """
+        Write a single new step to the F4T using Step Edit Action = Add (1375).
+        The F4T appends it after the current last step automatically.
+        seg dict: {end, duration (hours), rate, step_type}
+        """
+        client = self._f4t_client()
+        if client is None:
+            return
+
+        _TYPE_CODES = self._TYPE_CODES
+
+        def _wr(reg, val):
+            try:
+                client.write_register(reg, value=val)
+            except Exception as exc:
+                print(f"    _f4t_add_step write({reg}) error: {exc}")
+
+        def _wrf(reg, value):
+            try:
+                client.write_registers(reg, _encode_f4t_float(value))
+            except Exception as exc:
+                print(f"    _f4t_add_step write_float({reg}) error: {exc}")
+
+        try:
+            step_type = seg.get("step_type", "Ramp Time")
+            type_code = _TYPE_CODES.get(step_type, 1928)
+
+            # Signal Add — F4T allocates a new step slot
+            _wr(_REG_PROF_EDIT_ACT, 1375)
+            time.sleep(0.05)
+
+            # Write step type
+            _wr(_REG_PROF_STEP_TYPE, type_code)
+            time.sleep(0.02)
+
+            # Write setpoint (loop-specific)
+            sp_reg   = _REG_PROF_SP1   if self.loop == 1 else _REG_PROF_SP2
+            rate_reg = _REG_PROF_RATE1 if self.loop == 1 else _REG_PROF_RATE2
+            _wrf(sp_reg, float(seg["end"]))
+
+            if step_type == "Ramp Rate":
+                _wrf(rate_reg, abs(float(seg["rate"])))
+            else:
+                total_s = int(round(seg["duration"] * 3600))  # hours -> seconds
+                h, rem  = divmod(total_s, 3600)
+                m, s    = divmod(rem, 60)
+                _wr(_REG_PROF_TIME_H, h)
+                _wr(_REG_PROF_TIME_M, m)
+                _wr(_REG_PROF_TIME_S, s)
+
+            time.sleep(0.05)
+            print(f"  F4T Add step [{step_type}]: end={seg['end']}")
+        except Exception as exc:
+            print(f"  _f4t_add_step error: {exc}")
+        finally:
+            client.close()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _try_get_float(self, entry):
+        try:
+            return float(entry.get().strip())
+        except ValueError:
+            return None
+
+    def _is_soak(self, s, e):
+        if s is None or e is None:
+            return False
+        return abs(e - s) <= self._SOAK_EPSILON
+
+    def _determine_step_type(self, s, e, last_edited):
+        if self._is_soak(s, e):
+            return "Soak"
+        if last_edited == "rate":
+            return "Ramp Rate"
+        return "Ramp Time"
+
+    def _update_hint(self, step_type):
+        hints = {
+            "Soak":      "-> Watlow: Soak  (start = final, holds setpoint for duration)",
+            "Ramp Time": "-> Watlow: Ramp Time  (duration entered, rate auto-calculated)",
+            "Ramp Rate": "-> Watlow: Ramp Rate  (rate entered, duration auto-calculated)",
+        }
+        self.lbl_step_type_hint.config(text=hints.get(step_type, ""))
+
+    def _on_value_changed(self, event=None):
+        s = self._try_get_float(self.ent_start)
+        e = self._try_get_float(self.ent_end)
+        if s is not None and e is not None:
+            step_type = self._determine_step_type(s, e, self._last_edited)
+            self._update_hint(step_type)
+            if self._is_soak(s, e):
+                self.ent_rate.delete(0, tk.END)
+                self.ent_rate.insert(0, "0.00")
+
+    def _on_duration_focusout(self, event=None):
+        self._last_edited = "duration"
+        s = self._try_get_float(self.ent_start)
+        e = self._try_get_float(self.ent_end)
+        d = self._try_get_float(self.ent_duration)
+        step_type = self._determine_step_type(s, e, "duration")
+        self._update_hint(step_type)
+        if step_type == "Soak":
+            self.ent_rate.delete(0, tk.END)
+            self.ent_rate.insert(0, "0.00")
+            return
+        if d is not None and d > 0 and s is not None and e is not None:
+            r = (e - s) / d
+            self.ent_rate.delete(0, tk.END)
+            self.ent_rate.insert(0, f"{r:.4f}")
+
+    def _on_rate_focusout(self, event=None):
+        self._last_edited = "rate"
+        s = self._try_get_float(self.ent_start)
+        e = self._try_get_float(self.ent_end)
+        r = self._try_get_float(self.ent_rate)
+        step_type = self._determine_step_type(s, e, "rate")
+        self._update_hint(step_type)
+        if step_type == "Soak":
+            self.ent_rate.delete(0, tk.END)
+            self.ent_rate.insert(0, "0.00")
+            return
+        if r is not None and abs(r) > 1e-9 and s is not None and e is not None:
+            d = abs(e - s) / abs(r)
+            self.ent_duration.delete(0, tk.END)
+            self.ent_duration.insert(0, f"{d:.4f}")
+
+    # ------------------------------------------------------------------
+    # Segment management
+    # ------------------------------------------------------------------
 
     def add_segment(self):
         try:
             s = float(self.ent_start.get())
             e = float(self.ent_end.get())
-            d = float(self.ent_duration.get())
-            
-            if d <= 0:
-                messagebox.showerror("Error", "Duration must be positive.", parent=self.top)
-                return
-            
-            # Calculate Rate (Bars/hr)
-            r = (e - s) / d
-            
-            self.profile.append({'start': s, 'end': e, 'duration': d, 'rate': r})
+
+            if self._is_soak(s, e):
+                step_type = "Soak"
+            else:
+                step_type = self._determine_step_type(s, e, self._last_edited)
+
+            if step_type == "Soak":
+                d_str = self.ent_duration.get().strip()
+                if not d_str:
+                    messagebox.showerror("Error", "Please enter a Duration for the Soak step.", parent=self.top)
+                    return
+                d = float(d_str)
+                if d <= 0:
+                    messagebox.showerror("Error", "Duration must be positive.", parent=self.top)
+                    return
+                r = 0.0
+
+            elif step_type == "Ramp Rate":
+                r_str = self.ent_rate.get().strip()
+                d_str = self.ent_duration.get().strip()
+                if not r_str:
+                    messagebox.showerror("Error", "Please enter a Rate.", parent=self.top)
+                    return
+                r = float(r_str)
+                if abs(r) < 1e-9:
+                    messagebox.showerror("Error", "Rate cannot be zero.", parent=self.top)
+                    return
+                d = abs(e - s) / abs(r) if abs(e - s) > 1e-9 else (float(d_str) if d_str else 0.0)
+                if d <= 0:
+                    messagebox.showerror("Error", "Calculated duration is zero or negative.", parent=self.top)
+                    return
+
+            else:  # Ramp Time
+                d_str = self.ent_duration.get().strip()
+                if not d_str:
+                    messagebox.showerror("Error", "Please enter a Duration.", parent=self.top)
+                    return
+                d = float(d_str)
+                if d <= 0:
+                    messagebox.showerror("Error", "Duration must be positive.", parent=self.top)
+                    return
+                r = (e - s) / d
+
+            seg = {"start": s, "end": e, "duration": d, "rate": r, "step_type": step_type}
+            self.profile.append(seg)
             self.refresh_list()
-            
-            # Auto-fill next start with current end (Convenience)
+
+            # --- Live F4T: send Add step immediately ---
+            if self.f4t_connected:
+                threading.Thread(
+                    target=self._f4t_add_step,
+                    args=(seg,),
+                    daemon=True
+                ).start()
+
+            # Advance to next segment
             self.ent_start.delete(0, tk.END)
             self.ent_start.insert(0, str(e))
             self.ent_end.delete(0, tk.END)
             self.ent_duration.delete(0, tk.END)
+            self.ent_rate.delete(0, tk.END)
+            self._last_edited = None
+            self.lbl_step_type_hint.config(text="")
             self.ent_end.focus()
+
         except ValueError:
             messagebox.showerror("Error", "Invalid numbers.", parent=self.top)
 
@@ -295,16 +633,36 @@ class ProfileEditorDialog:
         for item in self.tree.get_children():
             self.tree.delete(item)
         for step in self.profile:
-            d = step.get('duration', 0)
-            r = step.get('rate', 0)
-            self.tree.insert("", tk.END, values=(step['start'], step['end'], d, f"{r:.2f}"))
+            d  = step.get("duration", 0)
+            r  = step.get("rate", 0)
+            st = step.get("step_type", "Ramp Time")
+            self.tree.insert("", tk.END, values=(
+                step["start"], step["end"],
+                f"{d:.4f}", f"{r:.4f}", st
+            ))
 
     def clear_all(self):
+        if not messagebox.askyesno("Clear All", "Clear all segments?\n\n"
+                + ("This will also delete and re-create Profile 1 on the F4T."
+                   if self.f4t_connected else ""),
+                parent=self.top):
+            return
         self.profile.clear()
         self.refresh_list()
+        # --- Live F4T: delete profile then immediately re-create blank ---
+        if self.f4t_connected:
+            threading.Thread(
+                target=self._f4t_delete_and_create_profile,
+                daemon=True
+            ).start()
 
     def save_exit(self):
-        self.on_save(self.profile)
+        # Append End-action sentinel so upload methods can read it
+        profile_with_end = list(self.profile) + [{
+            "step_type":  "End",
+            "end_action": self.end_action_var.get(),
+        }]
+        self.on_save(profile_with_end)
         self.top.destroy()
 
 class PowerControlDialog:
@@ -1553,121 +1911,658 @@ class BaseAPGUI:
         ThermocoupleDialog(self.root, self.device_mgr, self.serial_lock)
 
     def open_pressure_config(self):
-        """Opens the Pressure Profile Dialog."""
-        # Start with the current local profile
-        profile_to_edit = self.pressure_profile
-
-        # If Watlow is connected, download the existing profile first so the
-        # editor starts from the controller's current program.
+        """Opens the Pressure Profile Dialog, downloading from F4T first if connected."""
         if self.controller_type == 'watlow' and self.watlow_controller and not self.watlow_controller.simulated:
-            with self.serial_lock:
-                downloaded_steps = self.download_profile_from_watlow(profile_id=1)
+            # Show a small "Loading…" splash while we read the F4T over Modbus
+            splash = tk.Toplevel(self.root)
+            splash.title("Reading F4T Profile…")
+            splash.geometry("300x80")
+            splash.resizable(False, False)
+            splash.grab_set()
+            splash.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width() - 300) // 2
+            y = self.root.winfo_y() + (self.root.winfo_height() - 80) // 2
+            splash.geometry(f"+{x}+{y}")
+            tk.Label(splash, text="Downloading Profile 1 from Watlow F4T…",
+                     font=("Arial", 10), pady=20).pack()
+            progress = ttk.Progressbar(splash, mode="indeterminate", length=260)
+            progress.pack(pady=(0, 10))
+            progress.start(12)
+            splash.update()
 
-            if downloaded_steps is not None:
-                print(f"Downloaded {len(downloaded_steps)} steps from Watlow.")
-                # Convert Watlow steps to the format ProfileEditorDialog expects.
-                new_profile = []
-                last_end = 0.0
+            result_holder = [None]
 
-                for step in downloaded_steps:
-                    start_val = last_end
-                    end_val = step['end']
-                    duration_hrs = step['duration'] / 60.0
-                    rate = (end_val - start_val) / duration_hrs if duration_hrs > 0 else 0
+            def _do_download():
+                with self.serial_lock:
+                    result_holder[0] = self.download_profile_from_watlow(profile_id=1)
+                self.root.after(0, _download_done)
 
-                    new_profile.append({
-                        'start': start_val,
-                        'end': end_val,
-                        'duration': duration_hrs,
-                        'rate': rate
-                    })
-                    last_end = end_val
+            def _download_done():
+                progress.stop()
+                splash.destroy()
+                raw_steps = result_holder[0]
 
-                profile_to_edit = new_profile
-                self.pressure_profile = list(new_profile)
+                if raw_steps is not None and len(raw_steps) > 0:
+                    print(f"Downloaded {len(raw_steps)} steps from Watlow F4T (Loop 2 / Pressure).")
+                    converted = self._convert_f4t_steps_to_profile(raw_steps)
+                    self.pressure_profile = list(converted)
+                    profile_to_edit = converted
+                else:
+                    if raw_steps is not None and len(raw_steps) == 0:
+                        messagebox.showwarning(
+                            "Empty Profile",
+                            "Profile 1 on the Watlow F4T has no steps (or only an End step).\n"
+                            "The editor will open with your local profile.",
+                            parent=self.root)
+                    else:
+                        messagebox.showerror(
+                            "Download Failed",
+                            "Could not retrieve Profile 1 from the Watlow F4T.\n"
+                            "Check the connection and try again.\n\n"
+                            "The editor will open with your local profile.",
+                            parent=self.root)
+                    profile_to_edit = self.pressure_profile
+
+                ProfileEditorDialog(
+                    self.root, profile_to_edit, self.save_pressure_profile,
+                    title="Input Pressure Profile",
+                    value_label="Pressure (Bar)",
+                    rate_label="Rate (Bars/Hr)",
+                    f4t_ip=self.watlow_ip_address,
+                    f4t_connected=True,
+                    loop=2)
+
+            threading.Thread(target=_do_download, daemon=True).start()
+        else:
+            # No Watlow / simulation – just open the editor with whatever we have locally
+            ProfileEditorDialog(
+                self.root, self.pressure_profile, self.save_pressure_profile,
+                title="Input Pressure Profile",
+                value_label="Pressure (Bar)",
+                rate_label="Rate (Bars/Hr)",
+                f4t_ip=None,
+                f4t_connected=False,
+                loop=2)
+
+    def _convert_f4t_steps_to_profile(self, raw_steps):
+        """
+        Convert the list of raw F4T step dicts (from download_profile_from_watlow)
+        into the {start, end, duration, rate} segment format that ProfileEditorDialog uses.
+
+        raw_steps entries:
+            type_name  – str  e.g. "Ramp Time", "Soak", "Ramp Rate", "Instant Change"
+            target     – float (Loop 2 setpoint, Bar)
+            duration_h – float (total hours)
+            rate       – float (ramp rate in units/hr, only meaningful for Ramp Rate steps)
+        """
+        segments = []
+        last_end = 0.0
+
+        for step in raw_steps:
+            t = step['type_name']
+            target = step['target']
+            dur_h  = step['duration_h']
+
+            if t == "Soak":
+                # Soak: hold at the same pressure for the duration
+                segments.append({
+                    'start':    target,
+                    'end':      target,
+                    'duration': dur_h,
+                    'rate':     0.0
+                })
+            elif t == "Ramp Time":
+                # Ramp Time: go from last_end to target over the given duration
+                rate = (target - last_end) / dur_h if dur_h > 0 else 0.0
+                segments.append({
+                    'start':    last_end,
+                    'end':      target,
+                    'duration': dur_h,
+                    'rate':     rate
+                })
+            elif t == "Ramp Rate":
+                # Ramp Rate: step stores the rate directly; derive duration
+                rate = step['rate']
+                delta = abs(target - last_end)
+                dur_h = (delta / rate) if rate > 0 else 0.0
+                segments.append({
+                    'start':    last_end,
+                    'end':      target,
+                    'duration': dur_h,
+                    'rate':     rate if target >= last_end else -rate
+                })
+            elif t == "Instant Change":
+                # Instant change: jump setpoint immediately (zero duration)
+                segments.append({
+                    'start':    last_end,
+                    'end':      target,
+                    'duration': 0.0,
+                    'rate':     0.0
+                })
+            # Wait For / Jump / End steps are metadata-only and don't map to segments
             else:
-                messagebox.showerror("Download Failed", "Could not retrieve profile from Watlow F4T. Showing local profile instead.", parent=self.root)
+                continue
 
-        ProfileEditorDialog(self.root, profile_to_edit, self.save_pressure_profile, title="Input Pressure Profile", value_label="Pressure (Bar)", rate_label="Rate (Bars/Hr)")
+            last_end = target
+
+        return segments
 
     def save_pressure_profile(self, new_profile):
+        # Separate the End-action sentinel (last dict) from the real segments
+        end_action = "User"
+        if new_profile and new_profile[-1].get('step_type') == 'End':
+            end_action = new_profile[-1].get('end_action', 'User')
+            new_profile = new_profile[:-1]
+
         self.pressure_profile = new_profile
-        print(f"Pressure Profile Saved: {len(self.pressure_profile)} segments")
-        
+        print(f"Pressure Profile Saved: {len(self.pressure_profile)} segments  "
+              f"End Action: {end_action}")
+
         if self.controller_type == 'watlow' and self.watlow_controller:
             if messagebox.askyesno("Watlow F4T", "Upload this profile to Watlow F4T (Profile 1)?", parent=self.root):
                 steps = []
                 for seg in new_profile:
-                    steps.append({'end': seg['end'], 'duration': seg['duration'] * 60.0}) # Hours to Mins
+                    steps.append({
+                        'end':       seg['end'],
+                        'duration':  seg['duration'] * 60.0,   # hours → minutes
+                        'rate':      seg.get('rate', 0.0),
+                        'step_type': seg.get('step_type', 'Ramp Time'),
+                    })
 
                 with self.serial_lock:
-                    success = self.upload_profile_to_watlow(steps)
-                
+                    success = self.upload_profile_to_watlow(steps, end_action=end_action)
+
                 if success:
                     messagebox.showinfo("Success", "Profile uploaded successfully.", parent=self.root)
                     if messagebox.askyesno("Success", "Profile uploaded successfully.\n\nStart Profile 1 now?", parent=self.root):
                         with self.serial_lock:
-                            # 1782 = Start Action Enum for F4T
-                            self.watlow_controller.write_uint16(REG_PROF_ACTION, 1782)
+                            self.watlow_controller.write_uint16(_REG_PROF_ACTION, 1782)
                 else:
                     messagebox.showerror("Error", "Failed to upload profile.", parent=self.root)
 
     def download_profile_from_watlow(self, profile_id=1):
-        """Downloads profile steps from Watlow F4T using manually mapped registers."""
-        steps = []
-        try:
-            # Select Profile
-            if not self.watlow_controller.write_uint16(REG_PROF_ID, profile_id):
-                print("Failed to select profile for download.")
-                return None
+        """
+        Download all steps from F4T Profile 1 (Loop 2 / Pressure) using the
+        register map validated in profile_pressure.py.
 
-            # Loop through steps (max 50)
-            for i in range(1, 51):
-                if not self.watlow_controller.write_uint16(REG_PROF_STEP, i): break
-                
-                step_type = self.watlow_controller.read_uint16(REG_PROF_TYPE)
-                if step_type is None or step_type == 6: # 6 = End
-                    break
-                
-                if step_type == 1: # Ramp Time
-                    target = self.watlow_controller.read_float(REG_PROF_TARGET1)
-                    duration = self.watlow_controller.read_float(REG_PROF_DURATION)
-                    if target is not None and duration is not None:
-                        steps.append({'end': target, 'duration': duration})
-            return steps
-        except Exception as e:
-            print(f"Profile Download Error: {e}")
+        Returns a list of step dicts on success, [] for an empty/End-only profile,
+        or None on communication failure.
+        """
+        if not HAS_PYMODBUS:
+            print("pymodbus not available – cannot download F4T profile.")
             return None
 
-    def upload_profile_to_watlow(self, steps, profile_id=1):
-        """Uploads profile steps to Watlow F4T using manually mapped registers."""
+        steps = []
+        # Open a fresh, dedicated Modbus connection (avoids contention with the
+        # WatlowF4T client that uses a different read/write abstraction).
+        client = _ModbusTcpClient(self.watlow_ip_address, port=502, timeout=3)
+        if not client.connect():
+            print(f"F4T profile download: could not connect to {self.watlow_ip_address}:502")
+            return None
+
+        def _safe_read(reg, count):
+            try:
+                r = client.read_holding_registers(reg, count=count)
+                return r if (r and not r.isError()) else None
+            except Exception as exc:
+                print(f"  _safe_read({reg}) error: {exc}")
+                return None
+
+        def _safe_write(reg, val):
+            try:
+                return client.write_register(reg, value=val)
+            except Exception as exc:
+                print(f"  _safe_write({reg}) error: {exc}")
+                return None
+
         try:
-            if not self.watlow_controller.write_uint16(REG_PROF_ID, profile_id): return False
-            
-            for i, step in enumerate(steps):
-                if not self.watlow_controller.write_uint16(REG_PROF_STEP, i + 1): return False
-                if not self.watlow_controller.write_uint16(REG_PROF_TYPE, 1): return False # 1 = Ramp Time
-                if not self.watlow_controller.write_float(REG_PROF_TARGET1, step['end']): return False
-                if not self.watlow_controller.write_float(REG_PROF_DURATION, step['duration']): return False
-                
-            # End Step
-            if not self.watlow_controller.write_uint16(REG_PROF_STEP, len(steps) + 1): return False
-            return self.watlow_controller.write_uint16(REG_PROF_TYPE, 6) # 6 = End
-        except Exception as e:
-            print(f"Profile Upload Error: {e}")
+            # How many steps does the profile have?
+            res = _safe_read(_REG_PROF_NUM_STEPS, 1)
+            if res is None:
+                print("F4T profile download: could not read step count.")
+                return None
+
+            total_steps = res.registers[0]
+            print(f"  F4T reports {total_steps} step(s) in Profile 1.")
+
+            for i in range(1, total_steps + 1):
+                # Select the step
+                _safe_write(_REG_PROF_STEP_SEL, i)
+                time.sleep(0.05)   # give the controller time to latch
+
+                # Read 24 registers starting at 18926 to cover all Loop 2 fields:
+                #   offset  0 – Step Type   (18926)
+                #   offset  2 – Hours       (18928)
+                #   offset  4 – Minutes     (18930)
+                #   offset  6 – Seconds     (18932)
+                #   offset 14 – Rate 2      (18940, float, 2 regs)
+                #   offset 22 – SetPoint 2  (18948, float, 2 regs)
+                data = _safe_read(_REG_PROF_STEP_TYPE, 24)
+                if data is None:
+                    print(f"  Step {i}: read failed, skipping.")
+                    continue
+
+                r = data.registers
+                t_val     = r[0]
+                t_name    = _F4T_TYPE_MAP.get(t_val, f"Code {t_val}")
+                hours     = r[2]
+                minutes   = r[4]
+                seconds   = r[6]
+                duration_h = hours + minutes / 60.0 + seconds / 3600.0
+                rate      = _decode_f4t_float(r[14:16])   # Loop 2 ramp rate
+                target    = _decode_f4t_float(r[22:24])   # Loop 2 setpoint
+
+                print(f"  Step {i}: {t_name}  target={target:.3f}  "
+                      f"dur={hours:02d}:{minutes:02d}:{seconds:02d}  rate={rate:.3f}")
+
+                if t_val == 27:   # End step – stop here
+                    break
+
+                steps.append({
+                    'type_val':   t_val,
+                    'type_name':  t_name,
+                    'target':     target,
+                    'duration_h': duration_h,
+                    'rate':       rate,
+                    'hours':      hours,
+                    'minutes':    minutes,
+                    'seconds':    seconds,
+                })
+
+            return steps
+
+        except Exception as exc:
+            print(f"F4T profile download exception: {exc}")
+            return None
+        finally:
+            client.close()
+
+    def upload_profile_to_watlow(self, steps, profile_id=1, end_action="User"):
+        """
+        Upload profile segments to F4T Profile 1 (Loop 2 / Pressure).
+
+        Each step dict contains:
+            'end'       – float  target setpoint (Bar)
+            'duration'  – float  duration in minutes  (used for Soak / Ramp Time)
+            'rate'      – float  ramp rate in Bar/hr   (used for Ramp Rate)
+            'step_type' – str    "Soak" | "Ramp Time" | "Ramp Rate"
+
+        end_action: "User" | "Off" | "Hold"  — written to reg 19032 on the End step.
+        F4T step type codes:  Soak=87, Ramp Time=1928, Ramp Rate=81
+        """
+        if not HAS_PYMODBUS:
+            print("pymodbus not available – cannot upload F4T profile.")
             return False
 
+        _TYPE_CODES     = {"Soak": 87, "Ramp Time": 1928, "Ramp Rate": 81}
+        _END_ACT_CODES  = {"User": 100, "Off": 62, "Hold": 47}
+
+        client = _ModbusTcpClient(self.watlow_ip_address, port=502, timeout=3)
+        if not client.connect():
+            print(f"F4T profile upload: could not connect to {self.watlow_ip_address}:502")
+            return False
+
+        def _write(reg, val):
+            try:
+                return client.write_register(reg, value=val)
+            except Exception as exc:
+                print(f"  upload _write({reg}) error: {exc}")
+                return None
+
+        def _write_float(reg, value):
+            try:
+                words = _encode_f4t_float(value)
+                return client.write_registers(reg, words)
+            except Exception as exc:
+                print(f"  upload _write_float({reg}) error: {exc}")
+                return None
+
+        try:
+            for i, step in enumerate(steps):
+                step_num  = i + 1
+                step_type = step.get('step_type', 'Ramp Time')
+                type_code = _TYPE_CODES.get(step_type, 1928)
+
+                _write(_REG_PROF_STEP_SEL, step_num)
+                time.sleep(0.04)
+                _write(_REG_PROF_EDIT_ACT, 1770)
+                time.sleep(0.02)
+
+                _write(_REG_PROF_STEP_TYPE, type_code)
+                _write_float(_REG_PROF_SP2, float(step['end']))
+
+                if step_type == "Ramp Rate":
+                    _write_float(_REG_PROF_RATE2, abs(float(step['rate'])))
+                    print(f"  Uploaded step {step_num} [{step_type}]: "
+                          f"target={step['end']:.2f} Bar  rate={step['rate']:.4f} Bar/hr")
+                else:
+                    total_s = int(round(step['duration'] * 60))   # minutes → seconds
+                    h, rem  = divmod(total_s, 3600)
+                    m, s    = divmod(rem, 60)
+                    _write(_REG_PROF_TIME_H, h)
+                    _write(_REG_PROF_TIME_M, m)
+                    _write(_REG_PROF_TIME_S, s)
+                    print(f"  Uploaded step {step_num} [{step_type}]: "
+                          f"target={step['end']:.2f} Bar  dur={h:02d}:{m:02d}:{s:02d}")
+
+                time.sleep(0.04)
+
+            # Write End step
+            end_step_num = len(steps) + 1
+            _write(_REG_PROF_STEP_SEL, end_step_num)
+            time.sleep(0.04)
+            _write(_REG_PROF_EDIT_ACT, 1770)
+            time.sleep(0.02)
+            _write(_REG_PROF_STEP_TYPE, 27)   # 27 = End
+            # Write Loop 2 End Action
+            ea_code = _END_ACT_CODES.get(end_action, 100)
+            _write(_REG_PROF_END_ACT2, ea_code)
+            print(f"  Uploaded End step at position {end_step_num}  "
+                  f"End Action={end_action} ({ea_code}).")
+            return True
+
+        except Exception as exc:
+            print(f"F4T profile upload exception: {exc}")
+            return False
+        finally:
+            client.close()
+
     def open_temp_profile(self):
-        ProfileEditorDialog(self.root, self.temperature_profile, self.save_temp_profile, title="Input Temperature Profile", value_label="Temperature (C)", rate_label="Rate (C/Hr)")
+        """Opens the Temperature Profile Dialog, downloading from F4T first if connected."""
+        if self.controller_type == 'watlow' and self.watlow_controller and not self.watlow_controller.simulated:
+            # Show a small "Loading…" splash while we read the F4T over Modbus
+            splash = tk.Toplevel(self.root)
+            splash.title("Reading F4T Profile…")
+            splash.geometry("300x80")
+            splash.resizable(False, False)
+            splash.grab_set()
+            splash.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width() - 300) // 2
+            y = self.root.winfo_y() + (self.root.winfo_height() - 80) // 2
+            splash.geometry(f"+{x}+{y}")
+            tk.Label(splash, text="Downloading Profile 1 from Watlow F4T…",
+                     font=("Arial", 10), pady=20).pack()
+            progress = ttk.Progressbar(splash, mode="indeterminate", length=260)
+            progress.pack(pady=(0, 10))
+            progress.start(12)
+            splash.update()
+
+            result_holder = [None]
+
+            def _do_download():
+                with self.serial_lock:
+                    result_holder[0] = self.download_temp_profile_from_watlow(profile_id=1)
+                self.root.after(0, _download_done)
+
+            def _download_done():
+                progress.stop()
+                splash.destroy()
+                raw_steps = result_holder[0]
+
+                if raw_steps is not None and len(raw_steps) > 0:
+                    print(f"Downloaded {len(raw_steps)} steps from Watlow F4T (Loop 1 / Temperature).")
+                    converted = self._convert_f4t_steps_to_profile(raw_steps)
+                    self.temperature_profile = list(converted)
+                    profile_to_edit = converted
+                else:
+                    if raw_steps is not None and len(raw_steps) == 0:
+                        messagebox.showwarning(
+                            "Empty Profile",
+                            "Profile 1 on the Watlow F4T has no steps (or only an End step).\n"
+                            "The editor will open with your local profile.",
+                            parent=self.root)
+                    else:
+                        messagebox.showerror(
+                            "Download Failed",
+                            "Could not retrieve Profile 1 from the Watlow F4T.\n"
+                            "Check the connection and try again.\n\n"
+                            "The editor will open with your local profile.",
+                            parent=self.root)
+                    profile_to_edit = self.temperature_profile
+
+                ProfileEditorDialog(
+                    self.root, profile_to_edit, self.save_temp_profile,
+                    title="Input Temperature Profile",
+                    value_label="Temperature (C)",
+                    rate_label="Rate (C/Hr)",
+                    f4t_ip=self.watlow_ip_address,
+                    f4t_connected=True,
+                    loop=1)
+
+            threading.Thread(target=_do_download, daemon=True).start()
+        else:
+            # No Watlow / simulation – open editor with whatever is stored locally
+            ProfileEditorDialog(
+                self.root, self.temperature_profile, self.save_temp_profile,
+                title="Input Temperature Profile",
+                value_label="Temperature (C)",
+                rate_label="Rate (C/Hr)",
+                f4t_ip=None,
+                f4t_connected=False,
+                loop=1)
 
     def save_temp_profile(self, new_profile):
+        # Separate the End-action sentinel from the real segments
+        end_action = "User"
+        if new_profile and new_profile[-1].get('step_type') == 'End':
+            end_action = new_profile[-1].get('end_action', 'User')
+            new_profile = new_profile[:-1]
+
         self.temperature_profile = new_profile
-        print(f"Temperature Profile Saved: {len(self.temperature_profile)} segments")
+        print(f"Temperature Profile Saved: {len(self.temperature_profile)} segments  "
+              f"End Action: {end_action}")
+
+        if self.controller_type == 'watlow' and self.watlow_controller:
+            if messagebox.askyesno("Watlow F4T", "Upload this profile to Watlow F4T (Profile 1)?", parent=self.root):
+                steps = []
+                for seg in new_profile:
+                    steps.append({
+                        'end':       seg['end'],
+                        'duration':  seg['duration'] * 60.0,   # hours → minutes
+                        'rate':      seg.get('rate', 0.0),
+                        'step_type': seg.get('step_type', 'Ramp Time'),
+                    })
+
+                with self.serial_lock:
+                    success = self.upload_temp_profile_to_watlow(steps, end_action=end_action)
+
+                if success:
+                    if messagebox.askyesno("Success", "Profile uploaded successfully.\n\nStart Profile 1 now?", parent=self.root):
+                        with self.serial_lock:
+                            self.watlow_controller.write_uint16(_REG_PROF_ACTION, 1782)
+                else:
+                    messagebox.showerror("Error", "Failed to upload temperature profile.", parent=self.root)
+
+    def download_temp_profile_from_watlow(self, profile_id=1):
+        """
+        Download all steps from F4T Profile 1 (Loop 1 / Temperature) using the
+        register map validated in profile_temp.py.
+
+        Returns a list of step dicts on success, [] for an empty/End-only profile,
+        or None on communication failure.
+        """
+        if not HAS_PYMODBUS:
+            print("pymodbus not available – cannot download F4T temperature profile.")
+            return None
+
+        steps = []
+        client = _ModbusTcpClient(self.watlow_ip_address, port=502, timeout=3)
+        if not client.connect():
+            print(f"F4T temp profile download: could not connect to {self.watlow_ip_address}:502")
+            return None
+
+        def _safe_read(reg, count):
+            try:
+                r = client.read_holding_registers(reg, count=count)
+                return r if (r and not r.isError()) else None
+            except Exception as exc:
+                print(f"  _safe_read({reg}) error: {exc}")
+                return None
+
+        def _safe_write(reg, val):
+            try:
+                return client.write_register(reg, value=val)
+            except Exception as exc:
+                print(f"  _safe_write({reg}) error: {exc}")
+                return None
+
+        try:
+            res = _safe_read(_REG_PROF_NUM_STEPS, 1)
+            if res is None:
+                print("F4T temp profile download: could not read step count.")
+                return None
+
+            total_steps = res.registers[0]
+            print(f"  F4T reports {total_steps} step(s) in Profile 1 (Temperature).")
+
+            for i in range(1, total_steps + 1):
+                _safe_write(_REG_PROF_STEP_SEL, i)
+                time.sleep(0.05)
+
+                # Read 22 registers from 18926 to cover Loop 1 fields:
+                #   offset  0 – Step Type   (18926)
+                #   offset  2 – Hours       (18928)
+                #   offset  4 – Minutes     (18930)
+                #   offset  6 – Seconds     (18932)
+                #   offset 12 – Rate 1      (18938, float, 2 regs)
+                #   offset 20 – SetPoint 1  (18946, float, 2 regs)
+                data = _safe_read(_REG_PROF_STEP_TYPE, 22)
+                if data is None:
+                    print(f"  Step {i}: read failed, skipping.")
+                    continue
+
+                r = data.registers
+                t_val      = r[0]
+                t_name     = _F4T_TYPE_MAP.get(t_val, f"Code {t_val}")
+                hours      = r[2]
+                minutes    = r[4]
+                seconds    = r[6]
+                duration_h = hours + minutes / 60.0 + seconds / 3600.0
+                rate       = _decode_f4t_float(r[12:14])   # Loop 1 ramp rate
+                target     = _decode_f4t_float(r[20:22])   # Loop 1 setpoint
+
+                print(f"  Step {i}: {t_name}  target={target:.3f} °C  "
+                      f"dur={hours:02d}:{minutes:02d}:{seconds:02d}  rate={rate:.3f}")
+
+                if t_val == 27:   # End step – stop here
+                    break
+
+                steps.append({
+                    'type_val':   t_val,
+                    'type_name':  t_name,
+                    'target':     target,
+                    'duration_h': duration_h,
+                    'rate':       rate,
+                    'hours':      hours,
+                    'minutes':    minutes,
+                    'seconds':    seconds,
+                })
+
+            return steps
+
+        except Exception as exc:
+            print(f"F4T temp profile download exception: {exc}")
+            return None
+        finally:
+            client.close()
+
+    def upload_temp_profile_to_watlow(self, steps, profile_id=1, end_action="User"):
+        """
+        Upload profile segments to F4T Profile 1 (Loop 1 / Temperature).
+
+        Each step dict contains:
+            'end'       – float  target setpoint (°C)
+            'duration'  – float  duration in minutes  (used for Soak / Ramp Time)
+            'rate'      – float  ramp rate in °C/hr    (used for Ramp Rate)
+            'step_type' – str    "Soak" | "Ramp Time" | "Ramp Rate"
+
+        end_action: "User" | "Off" | "Hold"  — written to reg 19030 on the End step.
+        F4T step type codes:  Soak=87, Ramp Time=1928, Ramp Rate=81
+        """
+        if not HAS_PYMODBUS:
+            print("pymodbus not available – cannot upload F4T temperature profile.")
+            return False
+
+        _TYPE_CODES    = {"Soak": 87, "Ramp Time": 1928, "Ramp Rate": 81}
+        _END_ACT_CODES = {"User": 100, "Off": 62, "Hold": 47}
+
+        client = _ModbusTcpClient(self.watlow_ip_address, port=502, timeout=3)
+        if not client.connect():
+            print(f"F4T temp profile upload: could not connect to {self.watlow_ip_address}:502")
+            return False
+
+        def _write(reg, val):
+            try:
+                return client.write_register(reg, value=val)
+            except Exception as exc:
+                print(f"  upload _write({reg}) error: {exc}")
+                return None
+
+        def _write_float(reg, value):
+            try:
+                words = _encode_f4t_float(value)
+                return client.write_registers(reg, words)
+            except Exception as exc:
+                print(f"  upload _write_float({reg}) error: {exc}")
+                return None
+
+        try:
+            for i, step in enumerate(steps):
+                step_num  = i + 1
+                step_type = step.get('step_type', 'Ramp Time')
+                type_code = _TYPE_CODES.get(step_type, 1928)
+
+                _write(_REG_PROF_STEP_SEL, step_num)
+                time.sleep(0.04)
+                _write(_REG_PROF_EDIT_ACT, 1770)
+                time.sleep(0.02)
+
+                _write(_REG_PROF_STEP_TYPE, type_code)
+                _write_float(_REG_PROF_SP1, float(step['end']))
+
+                if step_type == "Ramp Rate":
+                    _write_float(_REG_PROF_RATE1, abs(float(step['rate'])))
+                    print(f"  Uploaded step {step_num} [{step_type}]: "
+                          f"target={step['end']:.2f} °C  rate={step['rate']:.4f} °C/hr")
+                else:
+                    total_s = int(round(step['duration'] * 60))   # minutes → seconds
+                    h, rem  = divmod(total_s, 3600)
+                    m, s    = divmod(rem, 60)
+                    _write(_REG_PROF_TIME_H, h)
+                    _write(_REG_PROF_TIME_M, m)
+                    _write(_REG_PROF_TIME_S, s)
+                    print(f"  Uploaded step {step_num} [{step_type}]: "
+                          f"target={step['end']:.2f} °C  dur={h:02d}:{m:02d}:{s:02d}")
+
+                time.sleep(0.04)
+
+            # Write End step
+            end_step_num = len(steps) + 1
+            _write(_REG_PROF_STEP_SEL, end_step_num)
+            time.sleep(0.04)
+            _write(_REG_PROF_EDIT_ACT, 1770)
+            time.sleep(0.02)
+            _write(_REG_PROF_STEP_TYPE, 27)   # 27 = End
+            # Write Loop 1 End Action
+            ea_code = _END_ACT_CODES.get(end_action, 100)
+            _write(_REG_PROF_END_ACT1, ea_code)
+            print(f"  Uploaded End step at position {end_step_num}  "
+                  f"End Action={end_action} ({ea_code}).")
+            return True
+
+        except Exception as exc:
+            print(f"F4T temp profile upload exception: {exc}")
+            return False
+        finally:
+            client.close()
 
     def open_power_profile(self):
         ProfileEditorDialog(self.root, self.power_profile, self.save_power_profile, title="Input Power Profile", value_label="Power (Watts)", rate_label="Rate (Watts/Hr)")
 
     def save_power_profile(self, new_profile):
+        # Strip End-action sentinel if present (ProfileEditorDialog always appends one)
+        if new_profile and new_profile[-1].get('step_type') == 'End':
+            new_profile = new_profile[:-1]
         self.power_profile = new_profile
         print(f"Power Profile Saved: {len(self.power_profile)} segments")
 

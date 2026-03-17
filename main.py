@@ -7,6 +7,7 @@ import queue
 import time
 import os
 import datetime
+import json
 from device_comm import DeviceManager, MotorValveController
 
 try:
@@ -120,6 +121,57 @@ class ZeroPressureDialog:
             self.top.destroy()
         else:
             messagebox.showerror("Error", msg, parent=self.top)
+
+class PIDSettingsDialog:
+    def __init__(self, master, current_settings, on_save):
+        self.top = tk.Toplevel(master)
+        self.top.title("PID Settings")
+        self.top.geometry("400x350")
+        self.top.configure(bg="#1e1e2e")
+        self.on_save = on_save
+        
+        tk.Label(self.top, text="PID Control Configuration", font=("Arial", 14, "bold"), bg="#1e1e2e", fg="white").pack(pady=(15, 10))
+        
+        main_frame = tk.Frame(self.top, bg="#2b2b3b", padx=20, pady=15)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        self.entries = {}
+        row = 0
+        for category, gains in current_settings.items():
+            cat_label = category.replace("_", " ").title()
+            tk.Label(main_frame, text=cat_label, font=("Arial", 11, "bold"), bg="#2b2b3b", fg="#00ffff").grid(row=row, column=0, columnspan=4, sticky="w", pady=(10 if row>0 else 0, 5))
+            row += 1
+            
+            self.entries[category] = {}
+            col = 0
+            for gain_name, value in gains.items():
+                tk.Label(main_frame, text=gain_name, bg="#2b2b3b", fg="white", font=("Arial", 10)).grid(row=row, column=col, sticky="e", padx=(10 if col>0 else 0, 5))
+                ent = tk.Entry(main_frame, width=8, font=("Arial", 10), justify="center")
+                ent.insert(0, str(value))
+                ent.grid(row=row, column=col+1, sticky="w", padx=5)
+                self.entries[category][gain_name] = ent
+                col += 2
+            row += 1
+                
+        btn_frame = tk.Frame(self.top, bg="#1e1e2e")
+        btn_frame.pack(pady=(0, 20))
+        
+        tk.Button(btn_frame, text="SAVE TO JSON", bg="#4caf50", fg="white", font=("Arial", 10, "bold"), width=15, command=self.save).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="CANCEL", bg="#f44336", fg="white", font=("Arial", 10, "bold"), width=12, command=self.top.destroy).pack(side=tk.LEFT, padx=10)
+
+    def save(self):
+        new_settings = {}
+        try:
+            for cat, gains in self.entries.items():
+                new_settings[cat] = {}
+                for g_name, ent in gains.items():
+                    new_settings[cat][g_name] = float(ent.get())
+        except ValueError:
+            messagebox.showerror("Error", "All values must be valid numbers.", parent=self.top)
+            return
+            
+        self.on_save(new_settings)
+        self.top.destroy()
 
 class ProfileEditorDialog:
     def __init__(self, master, profile, on_save, title="Profile Editor", value_label="Pressure (Bars)", rate_label="Rate (Bars/Hr)"):
@@ -557,7 +609,7 @@ class BaseAPGUI:
 
         self.device_mgr = DeviceManager()
         self.motor_mgr = MotorValveController() # Second serial port controller
-        self.target_voltage = 0.0 # Tracks the state for Port 5 (Omega)
+        self.target_voltage = 0.7 # Tracks the state for Port 5 (Omega)
         
         self.view_mode = "ALL" # "ALL" or "SINGLE"
         
@@ -578,7 +630,13 @@ class BaseAPGUI:
         self.save_interval_min = 1.0
         self.last_file_save_time = 0.0
         self.last_display_update_time = 0.0
+        self.last_pressure_control_time = 0.0
+        self.press_prev_error = None
         
+        self.current_target_pressure = None
+        self.current_target_temp = None
+        self.current_target_power = None
+
         # Power Control State
         self.power_control_active = False
         self.temp_control_active = False
@@ -590,6 +648,9 @@ class BaseAPGUI:
         self.data_history = {"Temperature": [], "Pressure": [], "Power": []}
         self.start_time = time.time()
         self.recording_active = False
+        
+        self.pid_config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pid_config.json")
+        self.load_pid_settings()
 
         # Configure Root
         self.root.configure(bg=self.colors["bg"])
@@ -643,6 +704,7 @@ class BaseAPGUI:
             ("STOP PROCESS", self.colors["danger"], self.stop_process),
             ("System Controls", self.colors["btn_bg"], self.open_system_controls),
             ("Thermocouple Config", self.colors["btn_bg"], self.open_temp_config),
+            ("PID Settings", self.colors["btn_bg"], self.open_pid_settings),
             ("Developer Mode", self.colors["btn_bg"], self.open_developer_mode),
             ("EXIT", self.colors["btn_bg"], self.cleanup_and_exit)
         ]
@@ -783,7 +845,7 @@ class BaseAPGUI:
         tk.Label(target_frame, text="Output:", bg=self.colors["card"], fg="white", font=("Arial", 12)).pack(side=tk.LEFT)
         self.ent_target_voltage = tk.Entry(target_frame, width=6, bg=self.colors["bg"], fg="white", insertbackground="white", relief="flat", font=("Arial", 12))
         self.ent_target_voltage.pack(side=tk.LEFT, padx=5)
-        self.ent_target_voltage.insert(0, "0.00")
+        self.ent_target_voltage.insert(0, "0.70")
         tk.Button(target_frame, text="SET", bg=self.colors["accent"], fg="black", font=("Arial", 10, "bold"), relief="flat", command=self.set_manual_voltage_direct).pack(side=tk.LEFT)
         
         adj_frame = tk.Frame(manual_card, bg=self.colors["card"])
@@ -807,6 +869,10 @@ class BaseAPGUI:
                 self.var_auto_power.set(False)
                 self.power_control_active = False
                 print("Auto Power Control disabled for Manual Output Control.")
+            if self.temp_control_active:
+                self.var_auto_temp.set(False)
+                self.temp_control_active = False
+                print("Auto Temp Control disabled for Manual Output Control.")
         else:
             self.btn_manual_voltage.config(text="Start Manual Control", bg=self.colors["btn_bg"], fg="white")
             self.btn_manual_voltage.config(text="Start Manual Control", bg=self.colors["success"], fg="white")
@@ -829,7 +895,7 @@ class BaseAPGUI:
             return
         try:
             val = float(self.ent_target_voltage.get())
-            self.target_voltage = max(0.0, min(10.0, val))
+            self.target_voltage = max(0.7, min(10.0, val))
             # Refresh entry in case it was clamped
             self.ent_target_voltage.delete(0, tk.END)
             self.ent_target_voltage.insert(0, f"{self.target_voltage:.2f}")
@@ -842,7 +908,7 @@ class BaseAPGUI:
     def adjust_voltage(self, delta):
         """Manually adjusts the target voltage."""
         self.target_voltage += delta
-        self.target_voltage = max(0.0, min(10.0, self.target_voltage))
+        self.target_voltage = max(0.7, min(10.0, self.target_voltage))
         
         self.ent_target_voltage.delete(0, tk.END)
         self.ent_target_voltage.insert(0, f"{self.target_voltage:.2f}")
@@ -851,20 +917,23 @@ class BaseAPGUI:
             self.device_mgr.set_omega_voltage(self.target_voltage)
 
     def quench_output(self):
-        """Immediately sets output voltage to 0 and stops automation."""
-        self.target_voltage = 0.0
+        """Immediately sets output voltage to baseline (0.7) and stops automation."""
+        self.target_voltage = 0.7
         self.ent_target_voltage.delete(0, tk.END)
-        self.ent_target_voltage.insert(0, "0.00")
+        self.ent_target_voltage.insert(0, "0.70")
         
         # Disable Auto Power if active
         if self.power_control_active:
             self.power_control_active = False
             self.var_auto_power.set(False)
+        if self.temp_control_active:
+            self.temp_control_active = False
+            self.var_auto_temp.set(False)
             
-        # Force 0V
+        # Force 0.7V
         with self.serial_lock:
-            self.device_mgr.set_omega_voltage(0.0)
-        print("QUENCH executed: Output set to 0V")
+            self.device_mgr.set_omega_voltage(0.7)
+        print("QUENCH executed: Output set to 0.7V")
 
     def set_all_view(self):
         self.view_mode = "ALL"
@@ -1007,8 +1076,18 @@ class BaseAPGUI:
                 self.var_auto_temp.set(False)
                 return
             self.temp_control_active = True
+            
+            # Disable conflicting power control
+            if self.power_control_active:
+                self.power_control_active = False
+                self.var_auto_power.set(False)
+                print("Auto Power Control disabled (Temperature Control taking over).")
+                
+            if not self.recording_active and not self.pressure_control_active and not self.power_control_active:
+                self.start_time = time.time()
         else:
             self.temp_control_active = False
+            self.current_target_temp = None
 
     def toggle_press_control_check(self):
         if self.var_auto_press.get():
@@ -1017,8 +1096,15 @@ class BaseAPGUI:
                 self.var_auto_press.set(False)
                 return
             self.pressure_control_active = True
+            self.press_prev_error = None
+            if not self.recording_active and not self.temp_control_active and not self.power_control_active:
+                self.start_time = time.time()
         else:
             self.pressure_control_active = False
+            self.current_target_pressure = None
+            self.press_prev_error = None
+            self.motor_mgr.reset_hardware()
+            print("Auto Pressure Control Disabled. Valves closed and motors reset.")
 
     def toggle_power_control_check(self):
         if self.var_auto_power.get():
@@ -1027,8 +1113,18 @@ class BaseAPGUI:
                 self.var_auto_power.set(False)
                 return
             self.power_control_active = True
+            
+            # Disable conflicting temperature control
+            if self.temp_control_active:
+                self.temp_control_active = False
+                self.var_auto_temp.set(False)
+                print("Auto Temp Control disabled (Power Control taking over).")
+                
+            if not self.recording_active and not self.temp_control_active and not self.pressure_control_active:
+                self.start_time = time.time()
         else:
             self.power_control_active = False
+            self.current_target_power = None
 
     def start_process(self):
         """Opens the Save Settings Dialog to configure logging before starting."""
@@ -1094,6 +1190,11 @@ class BaseAPGUI:
         self.temp_control_active = False
         self.var_auto_temp.set(False)
         
+        self.current_target_pressure = None
+        self.current_target_temp = None
+        self.current_target_power = None
+        self.press_prev_error = None
+
         self.recording_active = False
         print("Process Stopped.")
 
@@ -1164,8 +1265,8 @@ class BaseAPGUI:
                 # Small delay to ensure Mux is ready for next command
                 time.sleep(0.1)
 
-            # Handle Power Control Write (if active)
-            if self.power_control_active:
+            # Handle Power or Temp Control Write (if active)
+            if self.power_control_active or self.temp_control_active:
                 with self.serial_lock:
                     self.device_mgr.set_omega_voltage(self.target_voltage)
 
@@ -1251,6 +1352,72 @@ class BaseAPGUI:
                 print("Pressure Profile Completed.")
                 self.pressure_control_active = False
                 self.var_auto_press.set(False)
+                self.current_target_pressure = None
+                self.press_prev_error = None
+                self.motor_mgr.reset_hardware()
+                print("Hardware Reset Executed.")
+            else:
+                self.current_target_pressure = target_pressure
+                control_interval = 2.0
+                if current_time - self.last_pressure_control_time >= control_interval:
+                    dt = current_time - self.last_pressure_control_time
+                    self.last_pressure_control_time = current_time
+                    
+                    current_rate = active_segment['rate']
+                    error = target_pressure - meas_press
+                    
+                    if self.press_prev_error is None:
+                        self.press_prev_error = error
+                        
+                    delta_error = error - self.press_prev_error
+                    self.press_prev_error = error
+                    
+                    max_steps = 150 # Cap maximum motor steps per interval (increased for faster metering valve closure)
+                    
+                    if current_rate >= 0: 
+                        Kp = self.pid_settings["pressure_up"]["Kp"]
+                        Ki = self.pid_settings["pressure_up"]["Ki"]
+                        
+                        # --- UP CONTROL (Pressurize / Hold) ---
+                        # Keep UP valve open, keep DOWN valve closed. Modulate UP motor.
+                        p_term = Kp * delta_error
+                        i_term = Ki * error * dt
+                        
+                        step_size = int(p_term + i_term)
+                        step_size = max(-max_steps, min(max_steps, step_size))
+                        
+                        if step_size >= 0:
+                            cmd = f"BA0;AA8;A+{step_size}"
+                        else:
+                            cmd = f"BA0;AA8;A{step_size}" # step_size is negative, produces "A-XX"
+                            
+                        self.motor_mgr.send_command(cmd)
+                        if hasattr(self, 'debug_win') and self.debug_win.window.winfo_exists():
+                            self.debug_win.log(f"AutoPress UP: Target={target_pressure:.1f} Meas={meas_press:.1f} Err={error:.2f} -> CMD: {cmd}")
+                            
+                    else:
+                        Kp = self.pid_settings["pressure_down"]["Kp"]
+                        Ki = self.pid_settings["pressure_down"]["Ki"]
+                        
+                        # --- DOWN CONTROL (Bleed) ---
+                        # Target is dropping. Keep UP valve closed, keep DOWN valve open. Modulate DOWN motor.
+                        bleed_error = -error
+                        delta_bleed_error = -delta_error
+                        
+                        p_term = Kp * delta_bleed_error
+                        i_term = Ki * bleed_error * dt
+                        
+                        step_size = int(p_term + i_term)
+                        step_size = max(-max_steps, min(max_steps, step_size))
+                        
+                        if step_size >= 0:
+                            cmd = f"AA0;BA8;B-{step_size}" # B- opens bleed further
+                        else:
+                            cmd = f"AA0;BA8;B+{-step_size}" # B+ closes bleed
+                            
+                        self.motor_mgr.send_command(cmd)
+                        if hasattr(self, 'debug_win') and self.debug_win.window.winfo_exists():
+                            self.debug_win.log(f"AutoPress DOWN: Target={target_pressure:.1f} Meas={meas_press:.1f} Err={error:.2f} -> CMD: {cmd}")
 
         # Temperature Control Loop (Profile Execution)
         if self.temp_control_active and self.temperature_profile:
@@ -1270,7 +1437,22 @@ class BaseAPGUI:
                 print("Temperature Profile Completed.")
                 self.temp_control_active = False
                 self.var_auto_temp.set(False)
-            # Note: Actual PID control for temp not implemented, just profile calculation
+                self.current_target_temp = None
+            else:
+                self.current_target_temp = target_temp
+                
+                # Actual Temperature Control
+                error = target_temp - meas_temp
+                Kp = self.pid_settings["temperature_up"]["Kp"]
+                adjustment = error * Kp
+                
+                self.target_voltage += adjustment
+                self.target_voltage = max(0.7, min(10.0, self.target_voltage))
+                
+                new_volts_str = f"{self.target_voltage:.2f}"
+                if not self.manual_voltage_active and self.ent_target_voltage.get() != new_volts_str:
+                    self.ent_target_voltage.delete(0, tk.END)
+                    self.ent_target_voltage.insert(0, new_volts_str)
 
         # Power Control Loop (Profile Execution)
         if self.power_control_active and self.power_profile:
@@ -1290,8 +1472,10 @@ class BaseAPGUI:
                 print("Power Profile Completed.")
                 self.power_control_active = False
                 self.var_auto_power.set(False)
+                self.current_target_power = None
             else:
                 self.target_power_watts = target_power
+                self.current_target_power = target_power
         
         if self.recording_active:
             # 1. Display Update (Graphing) - Every 1 second
@@ -1337,16 +1521,21 @@ class BaseAPGUI:
         # Power Control Loop
         if self.power_control_active:
             error = self.target_power_watts - current_power
-            # Simple Integral Control: Adjust voltage by a small fraction of the error
-            # Gain K = 0.01 (Conservative starting point)
-            adjustment = error * 0.01
+            # Simple Control: Adjust voltage by a small fraction of the error
+            Kp = self.pid_settings["power_up"]["Kp"]
+            adjustment = error * Kp
             
             # Apply adjustment
             self.target_voltage += adjustment
             
             # Clamp to safe limits (0-10V)
-            self.target_voltage = max(0.0, min(10.0, self.target_voltage))
+            self.target_voltage = max(0.7, min(10.0, self.target_voltage))
             
+            new_volts_str = f"{self.target_voltage:.2f}"
+            if not self.manual_voltage_active and self.ent_target_voltage.get() != new_volts_str:
+                self.ent_target_voltage.delete(0, tk.END)
+                self.ent_target_voltage.insert(0, new_volts_str)
+
             # Note: The background thread handles the actual writing of self.target_voltage
 
         # Update Status Bar
@@ -1362,22 +1551,31 @@ class BaseAPGUI:
 
     def update_system_status(self):
         """Updates the status bar text based on active flags."""
-        if not self.recording_active:
-            self.lbl_system_status.config(text="STANDBY", fg=self.colors["danger"])
-            return
-
         states = []
         
         if self.pressure_control_active:
-            states.append("AUTO PRESS")
+            if getattr(self, 'current_target_pressure', None) is not None:
+                states.append(f"AUTO PRESS ({self.current_target_pressure:.1f} Bar)")
+            else:
+                states.append("AUTO PRESS")
         
         if self.power_control_active:
-            states.append("AUTO POWER")
-        elif self.target_voltage > 0.0:
+            if getattr(self, 'current_target_power', None) is not None:
+                states.append(f"AUTO POWER ({self.current_target_power:.1f} W)")
+            else:
+                states.append("AUTO POWER")
+        elif self.target_voltage > 0.7:
             states.append(f"MANUAL ({self.target_voltage:.2f}V)")
             
         if self.temp_control_active:
-            states.append("AUTO TEMP")
+            if getattr(self, 'current_target_temp', None) is not None:
+                states.append(f"AUTO TEMP ({self.current_target_temp:.1f} C)")
+            else:
+                states.append("AUTO TEMP")
+
+        if not self.recording_active and not states:
+            self.lbl_system_status.config(text="STANDBY", fg=self.colors["danger"])
+            return
             
         if not states:
             status_text = "MONITORING"
@@ -1396,6 +1594,40 @@ class BaseAPGUI:
         self.save_dir = new_dir
         self.base_filename = new_name
         self.save_interval_min = new_interval
+
+    def load_pid_settings(self):
+        default_settings = {
+            "pressure_up": {"Kp": 20.0, "Ki": 2.0},
+            "pressure_down": {"Kp": 20.0, "Ki": 2.0},
+            "temperature_up": {"Kp": 0.001, "Ki": 0.0},
+            "power_up": {"Kp": 0.01, "Ki": 0.0}
+        }
+        if os.path.exists(self.pid_config_file):
+            try:
+                with open(self.pid_config_file, "r") as f:
+                    loaded = json.load(f)
+                    for k in default_settings:
+                        if k in loaded:
+                            for gk in default_settings[k]:
+                                if gk in loaded[k]:
+                                    default_settings[k][gk] = loaded[k][gk]
+            except Exception as e:
+                print(f"Failed to load PID settings: {e}")
+        self.pid_settings = default_settings
+
+    def save_pid_settings(self, new_settings):
+        self.pid_settings = new_settings
+        try:
+            with open(self.pid_config_file, "w") as f:
+                json.dump(self.pid_settings, f, indent=4)
+            print("PID settings saved.")
+            messagebox.showinfo("PID Settings", "Settings successfully saved to pid_config.json")
+        except Exception as e:
+            print(f"Failed to save PID settings: {e}")
+            messagebox.showerror("Error", f"Failed to save PID settings:\n{e}")
+
+    def open_pid_settings(self):
+        PIDSettingsDialog(self.root, self.pid_settings, self.save_pid_settings)
 
     def open_temp_config(self):
         """Opens the Thermocouple Configuration Dialog."""

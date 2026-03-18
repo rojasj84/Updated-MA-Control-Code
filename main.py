@@ -368,6 +368,7 @@ class ProfileEditorDialog:
 
     def __init__(self, master, profile, on_save, title="Profile Editor",
                  value_label="Pressure (Bars)", rate_label="Rate (Bars/Hr)",
+                 duration_label="Duration (hours)",
                  f4t_ip=None, f4t_connected=False, loop=2):
         """
         f4t_ip        : IP string for live F4T Modbus commands (None = offline)
@@ -381,6 +382,7 @@ class ProfileEditorDialog:
         self.on_save = on_save
         self.value_label = value_label
         self.rate_label = rate_label
+        self.duration_label = duration_label
         self.f4t_ip = f4t_ip
         self.f4t_connected = f4t_connected and HAS_PYMODBUS and f4t_ip is not None
         self.loop = loop   # 1 = temp (Loop 1), 2 = pressure (Loop 2)
@@ -406,7 +408,7 @@ class ProfileEditorDialog:
         self.ent_end = tk.Entry(input_frame, width=10, font=("Arial", 10))
         self.ent_end.grid(row=1, column=1, padx=5)
 
-        tk.Label(input_frame, text="Duration (hours):", font=("Arial", 10)).grid(row=0, column=2)
+        tk.Label(input_frame, text=f"{self.duration_label}:", font=("Arial", 10)).grid(row=0, column=2)
         self.ent_duration = tk.Entry(input_frame, width=10, font=("Arial", 10))
         self.ent_duration.grid(row=1, column=2, padx=5)
 
@@ -464,7 +466,7 @@ class ProfileEditorDialog:
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=7)
         self.tree.heading("start",     text=f"Start {self.value_label}")
         self.tree.heading("end",       text=f"Final {self.value_label}")
-        self.tree.heading("duration",  text="Duration (hours)")
+        self.tree.heading("duration",  text=self.duration_label)
         self.tree.heading("rate",      text=self.rate_label)
         self.tree.heading("step_type", text="F4T Step Type")
 
@@ -568,7 +570,10 @@ class ProfileEditorDialog:
             if step_type == "Ramp Rate":
                 _wrf(rate_reg, abs(float(seg["rate"])))
             else:
-                total_s = int(round(seg["duration"] * 3600))  # hours -> seconds
+                if "min" in self.duration_label.lower():
+                    total_s = int(round(seg["duration"] * 60))
+                else:
+                    total_s = int(round(seg["duration"] * 3600))  # hours -> seconds
                 h, rem  = divmod(total_s, 3600)
                 m, s    = divmod(rem, 60)
                 _wr(_REG_PROF_TIME_H, h)
@@ -1157,6 +1162,9 @@ class BaseAPGUI:
         self.current_view = "Temperature"
         self.data_history = {"Temperature": [], "Pressure": [], "Power": [], "Resistance": []}
         self.start_time = time.time()
+        self.press_start_time = self.start_time
+        self.temp_start_time = self.start_time
+        self.power_start_time = self.start_time
         self.recording_active = False
         self.hover_state = {"view": None, "x": None, "y": None}
         self.zoom_limits = {v: None for v in ["Temperature", "Pressure", "Power", "Resistance"]}
@@ -1835,15 +1843,13 @@ class BaseAPGUI:
                 self.var_auto_temp.set(False)
                 return
             self.temp_control_active = True
+            self.temp_start_time = time.time()
             
             # Disable conflicting power control
             if self.power_control_active:
                 self.power_control_active = False
                 self.var_auto_power.set(False)
                 print("Auto Power Control disabled (Temperature Control taking over).")
-                
-            if not self.recording_active and not self.pressure_control_active and not self.power_control_active:
-                self.start_time = time.time()
         else:
             self.temp_control_active = False
             self.current_target_temp = None
@@ -1855,9 +1861,8 @@ class BaseAPGUI:
                 self.var_auto_press.set(False)
                 return
             self.pressure_control_active = True
+            self.press_start_time = time.time()
             self.press_prev_error = None
-            if not self.recording_active and not self.temp_control_active and not self.power_control_active:
-                self.start_time = time.time()
         else:
             self.pressure_control_active = False
             self.current_target_pressure = None
@@ -1872,15 +1877,13 @@ class BaseAPGUI:
                 self.var_auto_power.set(False)
                 return
             self.power_control_active = True
+            self.power_start_time = time.time()
             
             # Disable conflicting temperature control
             if self.temp_control_active:
                 self.temp_control_active = False
                 self.var_auto_temp.set(False)
                 print("Auto Temp Control disabled (Power Control taking over).")
-                
-            if not self.recording_active and not self.temp_control_active and not self.pressure_control_active:
-                self.start_time = time.time()
         else:
             self.power_control_active = False
             self.current_target_power = None
@@ -1906,6 +1909,7 @@ class BaseAPGUI:
         if self.pressure_profile:
             self.pressure_control_active = True
             self.var_auto_press.set(True)
+            self.press_start_time = time.time()
             print(f"Pressure Control Started: {len(self.pressure_profile)} segments.")
         else:
             self.pressure_control_active = False
@@ -1914,6 +1918,7 @@ class BaseAPGUI:
         if self.temperature_profile:
             self.temp_control_active = True
             self.var_auto_temp.set(True)
+            self.temp_start_time = time.time()
         else:
             self.temp_control_active = False
             self.var_auto_temp.set(False)
@@ -1921,6 +1926,7 @@ class BaseAPGUI:
         if self.power_profile:
             self.power_control_active = True
             self.var_auto_power.set(True)
+            self.power_start_time = time.time()
         else:
             self.power_control_active = False
             self.var_auto_power.set(False)
@@ -2114,7 +2120,7 @@ class BaseAPGUI:
 
         # Pressure Control Loop (Profile Execution)
         if self.pressure_control_active and self.pressure_profile:
-            elapsed_hours = (time.time() - self.start_time) / 3600.0
+            elapsed_hours = (time.time() - self.press_start_time) / 3600.0
             target_pressure = 0.0
             accumulated_time = 0.0
             active_segment = None
@@ -2212,19 +2218,19 @@ class BaseAPGUI:
 
         # Temperature Control Loop (Profile Execution)
         if self.temp_control_active and self.temperature_profile:
-            elapsed_hours = (time.time() - self.start_time) / 3600.0
+            elapsed_mins = (time.time() - self.temp_start_time) / 60.0
             target_temp = 0.0
             accumulated_time = 0.0
             active_segment = None
-            time_remaining_hours = 0.0
+            time_remaining_mins = 0.0
             current_seg_idx = 0
             for i, segment in enumerate(self.temperature_profile):
                 duration = segment['duration']
-                if elapsed_hours < (accumulated_time + duration):
-                    time_in_seg = elapsed_hours - accumulated_time
+                if elapsed_mins < (accumulated_time + duration):
+                    time_in_seg = elapsed_mins - accumulated_time
                     target_temp = segment['start'] + (segment['rate'] * time_in_seg)
                     active_segment = segment
-                    time_remaining_hours = (accumulated_time + duration) - elapsed_hours
+                    time_remaining_mins = (accumulated_time + duration) - elapsed_mins
                     current_seg_idx = i + 1
                     break
                 accumulated_time += duration
@@ -2237,7 +2243,7 @@ class BaseAPGUI:
                 self.current_temp_segment = None
             else:
                 self.current_target_temp = target_temp
-                self.current_temp_time_remaining = time_remaining_hours * 60.0
+                self.current_temp_time_remaining = time_remaining_mins
                 self.current_temp_segment = current_seg_idx
                 self.temp_total_segments = len(self.temperature_profile)
                 if self.controller_type == 'watlow':
@@ -2260,7 +2266,7 @@ class BaseAPGUI:
 
         # Power Control Loop (Profile Execution)
         if self.power_control_active and self.power_profile:
-            elapsed_hours = (time.time() - self.start_time) / 3600.0
+            elapsed_hours = (time.time() - self.power_start_time) / 3600.0
             target_power = 0.0
             accumulated_time = 0.0
             active_segment = None
@@ -2528,7 +2534,7 @@ class BaseAPGUI:
 
                 if raw_steps is not None and len(raw_steps) > 0:
                     print(f"Downloaded {len(raw_steps)} steps from Watlow F4T (Loop 2 / Pressure).")
-                    converted = self._convert_f4t_steps_to_profile(raw_steps)
+                    converted = self._convert_f4t_steps_to_profile(raw_steps, time_unit="hours")
                     self.pressure_profile = list(converted)
                     profile_to_edit = converted
                 else:
@@ -2568,7 +2574,7 @@ class BaseAPGUI:
                 f4t_connected=False,
                 loop=2)
 
-    def _convert_f4t_steps_to_profile(self, raw_steps):
+    def _convert_f4t_steps_to_profile(self, raw_steps, time_unit="hours"):
         """
         Convert the list of raw F4T step dicts (from download_profile_from_watlow)
         into the {start, end, duration, rate} segment format that ProfileEditorDialog uses.
@@ -2577,6 +2583,7 @@ class BaseAPGUI:
             type_name  – str  e.g. "Ramp Time", "Soak", "Ramp Rate", "Instant Change"
             target     – float (Loop 2 setpoint, Bar)
             duration_h – float (total hours)
+            duration_m - float (total minutes)
             rate       – float (ramp rate in units/hr, only meaningful for Ramp Rate steps)
         """
         segments = []
@@ -2585,34 +2592,34 @@ class BaseAPGUI:
         for step in raw_steps:
             t = step['type_name']
             target = step['target']
-            dur_h  = step['duration_h']
+            dur = step.get('duration_m', 0.0) if time_unit == "minutes" else step.get('duration_h', 0.0)
 
             if t == "Soak":
                 # Soak: hold at the same pressure for the duration
                 segments.append({
                     'start':    target,
                     'end':      target,
-                    'duration': dur_h,
+                    'duration': dur,
                     'rate':     0.0
                 })
             elif t == "Ramp Time":
                 # Ramp Time: go from last_end to target over the given duration
-                rate = (target - last_end) / dur_h if dur_h > 0 else 0.0
+                rate = (target - last_end) / dur if dur > 0 else 0.0
                 segments.append({
                     'start':    last_end,
                     'end':      target,
-                    'duration': dur_h,
+                    'duration': dur,
                     'rate':     rate
                 })
             elif t == "Ramp Rate":
                 # Ramp Rate: step stores the rate directly; derive duration
                 rate = step['rate']
                 delta = abs(target - last_end)
-                dur_h = (delta / rate) if rate > 0 else 0.0
+                dur = (delta / rate) if rate > 0 else 0.0
                 segments.append({
                     'start':    last_end,
                     'end':      target,
-                    'duration': dur_h,
+                    'duration': dur,
                     'rate':     rate if target >= last_end else -rate
                 })
             elif t == "Instant Change":
@@ -2733,6 +2740,7 @@ class BaseAPGUI:
                 minutes   = r[4]
                 seconds   = r[6]
                 duration_h = hours + minutes / 60.0 + seconds / 3600.0
+                duration_m = hours * 60.0 + minutes + seconds / 60.0
                 rate      = _decode_f4t_float(r[14:16])   # Loop 2 ramp rate
                 target    = _decode_f4t_float(r[22:24])   # Loop 2 setpoint
 
@@ -2747,6 +2755,7 @@ class BaseAPGUI:
                     'type_name':  t_name,
                     'target':     target,
                     'duration_h': duration_h,
+                    'duration_m': duration_m,
                     'rate':       rate,
                     'hours':      hours,
                     'minutes':    minutes,
@@ -2885,7 +2894,7 @@ class BaseAPGUI:
 
                 if raw_steps is not None and len(raw_steps) > 0:
                     print(f"Downloaded {len(raw_steps)} steps from Watlow F4T (Loop 1 / Temperature).")
-                    converted = self._convert_f4t_steps_to_profile(raw_steps)
+                    converted = self._convert_f4t_steps_to_profile(raw_steps, time_unit="minutes")
                     self.temperature_profile = list(converted)
                     profile_to_edit = converted
                 else:
@@ -2908,7 +2917,8 @@ class BaseAPGUI:
                     self.root, profile_to_edit, self.save_temp_profile,
                     title="Input Temperature Profile",
                     value_label="Temperature (°C)",
-                    rate_label="Rate (°C/Hr)",
+                    rate_label="Rate (°C/Min)",
+                    duration_label="Duration (mins)",
                     f4t_ip=self.watlow_ip_address,
                     f4t_connected=True,
                     loop=1)
@@ -2920,7 +2930,8 @@ class BaseAPGUI:
                 self.root, self.temperature_profile, self.save_temp_profile,
                 title="Input Temperature Profile",
                 value_label="Temperature (°C)",
-                rate_label="Rate (°C/Hr)",
+                rate_label="Rate (°C/Min)",
+                duration_label="Duration (mins)",
                 f4t_ip=None,
                 f4t_connected=False,
                 loop=1)
@@ -2942,7 +2953,7 @@ class BaseAPGUI:
                 for seg in new_profile:
                     steps.append({
                         'end':       seg['end'],
-                        'duration':  seg['duration'] * 60.0,   # hours → minutes
+                        'duration':  seg['duration'],
                         'rate':      seg.get('rate', 0.0),
                         'step_type': seg.get('step_type', 'Ramp Time'),
                     })
@@ -3022,6 +3033,7 @@ class BaseAPGUI:
                 minutes    = r[4]
                 seconds    = r[6]
                 duration_h = hours + minutes / 60.0 + seconds / 3600.0
+                duration_m = hours * 60.0 + minutes + seconds / 60.0
                 rate       = _decode_f4t_float(r[12:14])   # Loop 1 ramp rate
                 target     = _decode_f4t_float(r[20:22])   # Loop 1 setpoint
 
@@ -3036,6 +3048,7 @@ class BaseAPGUI:
                     'type_name':  t_name,
                     'target':     target,
                     'duration_h': duration_h,
+                    'duration_m': duration_m,
                     'rate':       rate,
                     'hours':      hours,
                     'minutes':    minutes,
@@ -3107,7 +3120,7 @@ class BaseAPGUI:
                 if step_type == "Ramp Rate":
                     _write_float(_REG_PROF_RATE1, abs(float(step['rate'])))
                     print(f"  Uploaded step {step_num} [{step_type}]: "
-                          f"target={step['end']:.2f} °C  rate={step['rate']:.4f} °C/hr")
+                          f"target={step['end']:.2f} °C  rate={step['rate']:.4f} °C/min")
                 else:
                     total_s = int(round(step['duration'] * 60))   # minutes → seconds
                     h, rem  = divmod(total_s, 3600)

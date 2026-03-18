@@ -7,7 +7,6 @@ import queue
 import time
 import os
 import datetime
-import json
 import struct
 from device_comm import DeviceManager, MotorValveController
 from Watlow import WatlowF4T
@@ -75,83 +74,34 @@ except ImportError:
     print("Warning: Pillow library not found. Install 'pillow' for better logo quality.")
 
 class ControllerSelectionDialog:
-    """
-    Startup dialog: choose Serial or Watlow F4T.
-    When Watlow is chosen an IP address entry appears inline so the user
-    can confirm or change the address before the connection is attempted.
-
-    The callback receives (controller_type, ip_address).
-    controller_type is 'serial', 'watlow', or None (window closed).
-    ip_address is a string (meaningful only when controller_type=='watlow').
-    """
-    _DEFAULT_IP = '192.168.0.222'
-
     def __init__(self, master, callback):
         self.top = tk.Toplevel(master)
         self.top.title("Select Controller")
-        self.top.geometry("420x170")
-        self.top.resizable(False, False)
+        self.top.geometry("350x150")
         self.callback = callback
         self.top.protocol("WM_DELETE_WINDOW", self.on_close)
 
         master.update_idletasks()
-        x = master.winfo_x() + (master.winfo_width() // 2) - (420 // 2)
-        y = master.winfo_y() + (master.winfo_height() // 2) - (170 // 2)
+        x = master.winfo_x() + (master.winfo_width() // 2) - (350 // 2)
+        y = master.winfo_y() + (master.winfo_height() // 2) - (150 // 2)
         self.top.geometry(f"+{x}+{y}")
+
         self.top.grab_set()
 
-        tk.Label(self.top, text="Please select the control hardware:",
-                 font=("Arial", 12)).pack(pady=(18, 10))
-
-        # --- Controller buttons ---
+        tk.Label(self.top, text="Please select the control hardware:", font=("Arial", 12)).pack(pady=20)
+        
         btn_frame = tk.Frame(self.top)
-        btn_frame.pack()
-        tk.Button(btn_frame, text="Serial (Texmate/Omega)", width=22,
-                  command=self._select_serial).pack(side=tk.LEFT, padx=10)
-        tk.Button(btn_frame, text="Watlow F4T (Network)", width=22,
-                  command=self._show_ip_row).pack(side=tk.LEFT, padx=10)
+        btn_frame.pack(pady=10)
 
-        # --- IP row (hidden until Watlow is chosen) ---
-        self._ip_frame = tk.Frame(self.top)
-        # (not packed yet)
+        tk.Button(btn_frame, text="Serial (Texmate/Omega)", width=20, command=lambda: self.select('serial')).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Watlow F4T (Network)", width=20, command=lambda: self.select('watlow')).pack(side=tk.LEFT, padx=10)
 
-        tk.Label(self._ip_frame, text="Watlow IP Address:", font=("Arial", 10)).pack(side=tk.LEFT, padx=(10, 4))
-        self._ip_var = tk.StringVar(value=self._DEFAULT_IP)
-        self._ip_entry = tk.Entry(self._ip_frame, textvariable=self._ip_var,
-                                  width=16, font=("Arial", 10))
-        self._ip_entry.pack(side=tk.LEFT, padx=(0, 8))
-        tk.Button(self._ip_frame, text="Connect", width=10,
-                  bg="#1a6b1a", fg="white", font=("Arial", 10),
-                  command=self._select_watlow).pack(side=tk.LEFT, padx=4)
-
-        self._ip_row_visible = False
-
-    # ------------------------------------------------------------------
-    def _show_ip_row(self):
-        """Reveal the IP entry + Connect button below the main buttons."""
-        if not self._ip_row_visible:
-            self._ip_frame.pack(pady=(10, 4))
-            self._ip_row_visible = True
-            # Grow window to fit the new row
-            self.top.geometry("420x215")
-        self._ip_entry.focus()
-        self._ip_entry.selection_range(0, tk.END)
-
-    def _select_serial(self):
-        self.callback('serial', '')
-        self.top.destroy()
-
-    def _select_watlow(self):
-        ip = self._ip_var.get().strip()
-        if not ip:
-            messagebox.showwarning("IP Required",
-                "Please enter the Watlow F4T IP address.", parent=self.top)
-            return
-        self.callback('watlow', ip)
+    def select(self, controller_type):
+        self.callback(controller_type)
         self.top.destroy()
 
     def on_close(self):
-        self.callback(None, '')
+        self.callback(None)
         self.top.destroy()
 
 class WatlowIPDialog:
@@ -306,57 +256,6 @@ class ZeroPressureDialog:
             self.top.destroy()
         else:
             messagebox.showerror("Error", msg, parent=self.top)
-
-class PIDSettingsDialog:
-    def __init__(self, master, current_settings, on_save):
-        self.top = tk.Toplevel(master)
-        self.top.title("PID Settings")
-        self.top.geometry("400x350")
-        self.top.configure(bg="#1e1e2e")
-        self.on_save = on_save
-        
-        tk.Label(self.top, text="PID Control Configuration", font=("Arial", 14, "bold"), bg="#1e1e2e", fg="white").pack(pady=(15, 10))
-        
-        main_frame = tk.Frame(self.top, bg="#2b2b3b", padx=20, pady=15)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-        
-        self.entries = {}
-        row = 0
-        for category, gains in current_settings.items():
-            cat_label = category.replace("_", " ").title()
-            tk.Label(main_frame, text=cat_label, font=("Arial", 11, "bold"), bg="#2b2b3b", fg="#00ffff").grid(row=row, column=0, columnspan=4, sticky="w", pady=(10 if row>0 else 0, 5))
-            row += 1
-            
-            self.entries[category] = {}
-            col = 0
-            for gain_name, value in gains.items():
-                tk.Label(main_frame, text=gain_name, bg="#2b2b3b", fg="white", font=("Arial", 10)).grid(row=row, column=col, sticky="e", padx=(10 if col>0 else 0, 5))
-                ent = tk.Entry(main_frame, width=8, font=("Arial", 10), justify="center")
-                ent.insert(0, str(value))
-                ent.grid(row=row, column=col+1, sticky="w", padx=5)
-                self.entries[category][gain_name] = ent
-                col += 2
-            row += 1
-                
-        btn_frame = tk.Frame(self.top, bg="#1e1e2e")
-        btn_frame.pack(pady=(0, 20))
-        
-        tk.Button(btn_frame, text="SAVE TO JSON", bg="#4caf50", fg="white", font=("Arial", 10, "bold"), width=15, command=self.save).pack(side=tk.LEFT, padx=10)
-        tk.Button(btn_frame, text="CANCEL", bg="#f44336", fg="white", font=("Arial", 10, "bold"), width=12, command=self.top.destroy).pack(side=tk.LEFT, padx=10)
-
-    def save(self):
-        new_settings = {}
-        try:
-            for cat, gains in self.entries.items():
-                new_settings[cat] = {}
-                for g_name, ent in gains.items():
-                    new_settings[cat][g_name] = float(ent.get())
-        except ValueError:
-            messagebox.showerror("Error", "All values must be valid numbers.", parent=self.top)
-            return
-            
-        self.on_save(new_settings)
-        self.top.destroy()
 
 class ProfileEditorDialog:
     # Tolerance for treating start == end as a Soak (handles float repr noise)
@@ -1105,7 +1004,7 @@ class BaseAPGUI:
 
         self.device_mgr = DeviceManager()
         self.motor_mgr = MotorValveController() # Second serial port controller
-        self.target_voltage = 0.7 # Tracks the state for Port 5 (Omega)
+        self.target_voltage = 0.0 # Tracks the state for Port 5 (Omega)
         
         self.controller_type = None
         self.watlow_controller = None
@@ -1129,13 +1028,7 @@ class BaseAPGUI:
         self.save_interval_min = 1.0
         self.last_file_save_time = 0.0
         self.last_display_update_time = 0.0
-        self.last_pressure_control_time = 0.0
-        self.press_prev_error = None
         
-        self.current_target_pressure = None
-        self.current_target_temp = None
-        self.current_target_power = None
-
         # Power Control State
         self.power_control_active = False
         self.temp_control_active = False
@@ -1147,9 +1040,6 @@ class BaseAPGUI:
         self.data_history = {"Temperature": [], "Pressure": [], "Power": []}
         self.start_time = time.time()
         self.recording_active = False
-        
-        self.pid_config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pid_config.json")
-        self.load_pid_settings()
 
         # Configure Root
         self.root.configure(bg=self.colors["bg"])
@@ -1161,16 +1051,13 @@ class BaseAPGUI:
         self.select_controller()
 
     def select_controller(self):
-        def callback(selection, ip):
+        def callback(selection):
             if selection is None:
                 self.root.destroy()
                 return
 
             self.controller_type = selection
-            if selection == 'watlow' and ip:
-                self.watlow_ip_address = ip
-            print(f"Controller selected: {self.controller_type}"
-                  + (f"  IP: {self.watlow_ip_address}" if selection == 'watlow' else ""))
+            print(f"Controller selected: {self.controller_type}")
             self.root.deiconify()
             self.root.after(200, self.connect_hardware)
 
@@ -1219,7 +1106,6 @@ class BaseAPGUI:
             ("STOP PROCESS", self.colors["danger"], self.stop_process),
             ("System Controls", self.colors["btn_bg"], self.open_system_controls),
             ("Thermocouple Config", self.colors["btn_bg"], self.open_temp_config),
-            ("PID Settings", self.colors["btn_bg"], self.open_pid_settings),
             ("Developer Mode", self.colors["btn_bg"], self.open_developer_mode),
             ("EXIT", self.colors["btn_bg"], self.cleanup_and_exit)
         ]
@@ -1359,7 +1245,7 @@ class BaseAPGUI:
         target_frame.pack(fill=tk.X, pady=2, padx=5)
         self.ent_target_voltage = tk.Entry(target_frame, width=6, bg=self.colors["bg"], fg="white", insertbackground="white", relief="flat", font=("Arial", 12))
         self.ent_target_voltage.pack(side=tk.LEFT, padx=5)
-        self.ent_target_voltage.insert(0, "0.70")
+        self.ent_target_voltage.insert(0, "0.00")
         tk.Button(target_frame, text="SET", bg=self.colors["accent"], fg="black", font=("Arial", 10, "bold"), relief="flat", command=self.set_manual_voltage_direct).pack(side=tk.LEFT)
         
         adj_frame = tk.Frame(manual_card, bg=self.colors["card"])
@@ -1382,11 +1268,7 @@ class BaseAPGUI:
             if self.power_control_active:
                 self.var_auto_power.set(False) # This will trigger its command to set self.power_control_active = False
                 print("Auto Power Control disabled for Manual Output Control.")
-            if self.temp_control_active:
-                self.var_auto_temp.set(False)
-                self.temp_control_active = False
-                print("Auto Temp Control disabled for Manual Output Control.")
-
+            
             if self.controller_type == 'watlow':
                 with self.serial_lock:
                     self.watlow_controller.write_uint16(REG_TEMP_MODE, 54) # Manual Mode
@@ -1433,7 +1315,6 @@ class BaseAPGUI:
             return
         try:
             val = float(self.ent_target_voltage.get())
-
             
             if self.controller_type == 'watlow':
                 val = max(0.0, min(100.0, val)) # Clamp 0-100%
@@ -1450,32 +1331,17 @@ class BaseAPGUI:
         except ValueError:
             messagebox.showerror("Error", "Invalid voltage value.")
 
-    def adjust_voltage(self, delta):
-        """Manually adjusts the target voltage (serial controller only)."""
-        if self.controller_type != 'serial':
-            return
-        self.target_voltage += delta
-        self.target_voltage = max(0.0, min(10.0, self.target_voltage))
-        self.ent_target_voltage.delete(0, tk.END)
-        self.ent_target_voltage.insert(0, f"{self.target_voltage:.2f}")
-        with self.serial_lock:
-            self.device_mgr.set_omega_voltage(self.target_voltage)
-
     def quench_output(self):
-        """Immediately sets output to 0 and stops all automation."""
+        """Immediately sets output to 0 and stops automation."""
         if self.power_control_active:
-            self.power_control_active = False
             self.var_auto_power.set(False)
-        if self.temp_control_active:
-            self.temp_control_active = False
-            self.var_auto_temp.set(False)
         if self.manual_voltage_active:
             self.manual_voltage_active = False
             self.btn_manual_voltage.config(text="Start Manual Control", bg=self.colors["success"])
 
         self.ent_target_voltage.delete(0, tk.END)
         self.ent_target_voltage.insert(0, "0.00")
-
+        
         if self.controller_type == 'watlow':
             with self.serial_lock:
                 self.watlow_controller.write_uint16(REG_TEMP_MODE, 62) # Mode OFF
@@ -1609,14 +1475,6 @@ class BaseAPGUI:
         else: # Handle case with no or single data point
             canvas.create_text(w/2, h/2, text="No data to display", fill="#666677", font=("Arial", 12))
 
-    def redraw_visible_graphs(self):
-        """Redraw whichever graph canvases are currently shown."""
-        if self.view_mode == "ALL":
-            for view_name in self.canvases:
-                self.draw_single_graph(view_name)
-        else:
-            self.draw_single_graph(self.current_view)
-
     def on_click(self):
         print("Button clicked")
 
@@ -1627,18 +1485,8 @@ class BaseAPGUI:
                 self.var_auto_temp.set(False)
                 return
             self.temp_control_active = True
-            
-            # Disable conflicting power control
-            if self.power_control_active:
-                self.power_control_active = False
-                self.var_auto_power.set(False)
-                print("Auto Power Control disabled (Temperature Control taking over).")
-                
-            if not self.recording_active and not self.pressure_control_active and not self.power_control_active:
-                self.start_time = time.time()
         else:
             self.temp_control_active = False
-            self.current_target_temp = None
 
     def toggle_press_control_check(self):
         if self.var_auto_press.get():
@@ -1647,15 +1495,8 @@ class BaseAPGUI:
                 self.var_auto_press.set(False)
                 return
             self.pressure_control_active = True
-            self.press_prev_error = None
-            if not self.recording_active and not self.temp_control_active and not self.power_control_active:
-                self.start_time = time.time()
         else:
             self.pressure_control_active = False
-            self.current_target_pressure = None
-            self.press_prev_error = None
-            self.motor_mgr.reset_hardware()
-            print("Auto Pressure Control Disabled. Valves closed and motors reset.")
 
     def toggle_power_control_check(self):
         if self.var_auto_power.get():
@@ -1664,18 +1505,8 @@ class BaseAPGUI:
                 self.var_auto_power.set(False)
                 return
             self.power_control_active = True
-            
-            # Disable conflicting temperature control
-            if self.temp_control_active:
-                self.temp_control_active = False
-                self.var_auto_temp.set(False)
-                print("Auto Temp Control disabled (Power Control taking over).")
-                
-            if not self.recording_active and not self.temp_control_active and not self.pressure_control_active:
-                self.start_time = time.time()
         else:
             self.power_control_active = False
-            self.current_target_power = None
 
     def start_process(self):
         """Opens the Save Settings Dialog to configure logging before starting."""
@@ -1741,11 +1572,6 @@ class BaseAPGUI:
         self.temp_control_active = False
         self.var_auto_temp.set(False)
         
-        self.current_target_pressure = None
-        self.current_target_temp = None
-        self.current_target_power = None
-        self.press_prev_error = None
-
         self.recording_active = False
         print("Process Stopped.")
 
@@ -1912,74 +1738,11 @@ class BaseAPGUI:
                 print("Pressure Profile Completed.")
                 self.pressure_control_active = False
                 self.var_auto_press.set(False)
-                self.current_target_pressure = None
-                self.press_prev_error = None
-                self.motor_mgr.reset_hardware()
-                print("Hardware Reset Executed.")
-            else:
-                self.current_target_pressure = target_pressure
-                if self.controller_type == 'watlow':
-                    with self.serial_lock:
-                        if self.watlow_controller.read_uint16(REG_PRESSURE_MODE) != 10:
-                            self.watlow_controller.write_uint16(REG_PRESSURE_MODE, 10)
-                        self.watlow_controller.write_float(REG_PRESSURE_SP, target_pressure)
-                else: # serial – motor PID control
-                    control_interval = 2.0
-                    if current_time - self.last_pressure_control_time >= control_interval:
-                        dt = current_time - self.last_pressure_control_time
-                        self.last_pressure_control_time = current_time
-
-                        current_rate = active_segment['rate']
-                        error = target_pressure - meas_press
-
-                        if self.press_prev_error is None:
-                            self.press_prev_error = error
-
-                        delta_error = error - self.press_prev_error
-                        self.press_prev_error = error
-
-                        max_steps = 150
-
-                        if current_rate >= 0:
-                            Kp = self.pid_settings["pressure_up"]["Kp"]
-                            Ki = self.pid_settings["pressure_up"]["Ki"]
-
-                            p_term = Kp * delta_error
-                            i_term = Ki * error * dt
-
-                            step_size = int(p_term + i_term)
-                            step_size = max(-max_steps, min(max_steps, step_size))
-
-                            if step_size >= 0:
-                                cmd = f"BA0;AA8;A+{step_size}"
-                            else:
-                                cmd = f"BA0;AA8;A{step_size}"
-
-                            self.motor_mgr.send_command(cmd)
-                            if hasattr(self, 'debug_win') and self.debug_win.window.winfo_exists():
-                                self.debug_win.log(f"AutoPress UP: Target={target_pressure:.1f} Meas={meas_press:.1f} Err={error:.2f} -> CMD: {cmd}")
-
-                        else:
-                            Kp = self.pid_settings["pressure_down"]["Kp"]
-                            Ki = self.pid_settings["pressure_down"]["Ki"]
-
-                            bleed_error = -error
-                            delta_bleed_error = -delta_error
-
-                            p_term = Kp * delta_bleed_error
-                            i_term = Ki * bleed_error * dt
-
-                            step_size = int(p_term + i_term)
-                            step_size = max(-max_steps, min(max_steps, step_size))
-
-                            if step_size >= 0:
-                                cmd = f"AA0;BA8;B-{step_size}"
-                            else:
-                                cmd = f"AA0;BA8;B+{-step_size}"
-
-                            self.motor_mgr.send_command(cmd)
-                            if hasattr(self, 'debug_win') and self.debug_win.window.winfo_exists():
-                                self.debug_win.log(f"AutoPress DOWN: Target={target_pressure:.1f} Meas={meas_press:.1f} Err={error:.2f} -> CMD: {cmd}")
+            elif self.controller_type == 'watlow':
+                with self.serial_lock:
+                    if self.watlow_controller.read_uint16(REG_PRESSURE_MODE) != 10:
+                        self.watlow_controller.write_uint16(REG_PRESSURE_MODE, 10)
+                    self.watlow_controller.write_float(REG_PRESSURE_SP, target_pressure)
 
         # Temperature Control Loop (Profile Execution)
         if self.temp_control_active and self.temperature_profile:
@@ -1999,26 +1762,11 @@ class BaseAPGUI:
                 print("Temperature Profile Completed.")
                 self.temp_control_active = False
                 self.var_auto_temp.set(False)
-                self.current_target_temp = None
-            else:
-                self.current_target_temp = target_temp
-                if self.controller_type == 'watlow':
-                    with self.serial_lock:
-                        if self.watlow_controller.read_uint16(REG_TEMP_MODE) != 10:
-                            self.watlow_controller.write_uint16(REG_TEMP_MODE, 10)
-                        self.watlow_controller.write_float(REG_TEMP_SP, target_temp)
-                else: # serial – voltage PID control
-                    error = target_temp - meas_temp
-                    Kp = self.pid_settings["temperature_up"]["Kp"]
-                    adjustment = error * Kp
-
-                    self.target_voltage += adjustment
-                    self.target_voltage = max(0.0, min(10.0, self.target_voltage))
-
-                    new_volts_str = f"{self.target_voltage:.2f}"
-                    if not self.manual_voltage_active and self.ent_target_voltage.get() != new_volts_str:
-                        self.ent_target_voltage.delete(0, tk.END)
-                        self.ent_target_voltage.insert(0, new_volts_str)
+            elif self.controller_type == 'watlow':
+                with self.serial_lock:
+                    if self.watlow_controller.read_uint16(REG_TEMP_MODE) != 10:
+                        self.watlow_controller.write_uint16(REG_TEMP_MODE, 10)
+                    self.watlow_controller.write_float(REG_TEMP_SP, target_temp)
 
         # Power Control Loop (Profile Execution)
         if self.power_control_active and self.power_profile:
@@ -2038,10 +1786,8 @@ class BaseAPGUI:
                 print("Power Profile Completed.")
                 self.power_control_active = False
                 self.var_auto_power.set(False)
-                self.current_target_power = None
             else:
                 self.target_power_watts = target_power
-                self.current_target_power = target_power
         
         if self.recording_active:
             if (current_time - self.last_display_update_time) >= 1.0:
@@ -2083,22 +1829,19 @@ class BaseAPGUI:
                 with self.serial_lock:
                     if self.watlow_controller.read_uint16(REG_TEMP_MODE) != 54:
                         self.watlow_controller.write_uint16(REG_TEMP_MODE, 54)
+                    
+                    # Simple P-control to match target power by adjusting % output
                     error = self.target_power_watts - current_power
-                    Kp = self.pid_settings["power_up"]["Kp"]
-                    adjustment = error * Kp
+                    adjustment = error * 0.01 # Proportional gain (needs tuning)
+                    
                     current_pwr_pct = self.watlow_controller.read_float(REG_TEMP_MANUAL_POWER)
                     if current_pwr_pct is not None:
                         new_pwr_pct = max(0.0, min(100.0, current_pwr_pct + adjustment))
                         self.watlow_controller.write_float(REG_TEMP_MANUAL_POWER, new_pwr_pct)
-            else: # serial – voltage PID
+            else: # serial
                 error = self.target_power_watts - current_power
-                Kp = self.pid_settings["power_up"]["Kp"]
-                adjustment = error * Kp
+                adjustment = error * 0.01
                 self.target_voltage = max(0.0, min(10.0, self.target_voltage + adjustment))
-                new_volts_str = f"{self.target_voltage:.2f}"
-                if not self.manual_voltage_active and self.ent_target_voltage.get() != new_volts_str:
-                    self.ent_target_voltage.delete(0, tk.END)
-                    self.ent_target_voltage.insert(0, new_volts_str)
                 with self.serial_lock:
                     self.device_mgr.set_omega_voltage(self.target_voltage)
 
@@ -2125,34 +1868,25 @@ class BaseAPGUI:
 
     def update_system_status(self):
         """Updates the status bar text based on active flags."""
+        if not self.recording_active:
+            self.lbl_system_status.config(text="STANDBY", fg=self.colors["danger"])
+            return
+
         states = []
         
         if self.pressure_control_active:
-            if getattr(self, 'current_target_pressure', None) is not None:
-                states.append(f"AUTO PRESS ({self.current_target_pressure:.1f} Bar)")
-            else:
-                states.append("AUTO PRESS")
+            states.append("AUTO PRESS")
         
         if self.power_control_active:
-            if getattr(self, 'current_target_power', None) is not None:
-                states.append(f"AUTO POWER ({self.current_target_power:.1f} W)")
-            else:
-                states.append("AUTO POWER")
+            states.append("AUTO POWER")
         elif self.manual_voltage_active:
             if self.controller_type == 'watlow':
-                states.append("MANUAL PWR")
+                states.append(f"MANUAL PWR")
             else:
                 states.append(f"MANUAL ({self.target_voltage:.2f}V)")
             
         if self.temp_control_active:
-            if getattr(self, 'current_target_temp', None) is not None:
-                states.append(f"AUTO TEMP ({self.current_target_temp:.1f} C)")
-            else:
-                states.append("AUTO TEMP")
-
-        if not self.recording_active and not states:
-            self.lbl_system_status.config(text="STANDBY", fg=self.colors["danger"])
-            return
+            states.append("AUTO TEMP")
             
         if not states:
             status_text = "MONITORING"
@@ -2171,40 +1905,6 @@ class BaseAPGUI:
         self.save_dir = new_dir
         self.base_filename = new_name
         self.save_interval_min = new_interval
-
-    def load_pid_settings(self):
-        default_settings = {
-            "pressure_up": {"Kp": 20.0, "Ki": 2.0},
-            "pressure_down": {"Kp": 20.0, "Ki": 2.0},
-            "temperature_up": {"Kp": 0.001, "Ki": 0.0},
-            "power_up": {"Kp": 0.01, "Ki": 0.0}
-        }
-        if os.path.exists(self.pid_config_file):
-            try:
-                with open(self.pid_config_file, "r") as f:
-                    loaded = json.load(f)
-                    for k in default_settings:
-                        if k in loaded:
-                            for gk in default_settings[k]:
-                                if gk in loaded[k]:
-                                    default_settings[k][gk] = loaded[k][gk]
-            except Exception as e:
-                print(f"Failed to load PID settings: {e}")
-        self.pid_settings = default_settings
-
-    def save_pid_settings(self, new_settings):
-        self.pid_settings = new_settings
-        try:
-            with open(self.pid_config_file, "w") as f:
-                json.dump(self.pid_settings, f, indent=4)
-            print("PID settings saved.")
-            messagebox.showinfo("PID Settings", "Settings successfully saved to pid_config.json")
-        except Exception as e:
-            print(f"Failed to save PID settings: {e}")
-            messagebox.showerror("Error", f"Failed to save PID settings:\n{e}")
-
-    def open_pid_settings(self):
-        PIDSettingsDialog(self.root, self.pid_settings, self.save_pid_settings)
 
     def open_temp_config(self):
         """Opens the Thermocouple Configuration Dialog."""

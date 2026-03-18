@@ -74,34 +74,83 @@ except ImportError:
     print("Warning: Pillow library not found. Install 'pillow' for better logo quality.")
 
 class ControllerSelectionDialog:
+    """
+    Startup dialog: choose Serial or Watlow F4T.
+    When Watlow is chosen an IP address entry appears inline so the user
+    can confirm or change the address before the connection is attempted.
+
+    The callback receives (controller_type, ip_address).
+    controller_type is 'serial', 'watlow', or None (window closed).
+    ip_address is a string (meaningful only when controller_type=='watlow').
+    """
+    _DEFAULT_IP = '192.168.0.222'
+
     def __init__(self, master, callback):
         self.top = tk.Toplevel(master)
         self.top.title("Select Controller")
-        self.top.geometry("350x150")
+        self.top.geometry("420x170")
+        self.top.resizable(False, False)
         self.callback = callback
         self.top.protocol("WM_DELETE_WINDOW", self.on_close)
 
         master.update_idletasks()
-        x = master.winfo_x() + (master.winfo_width() // 2) - (350 // 2)
-        y = master.winfo_y() + (master.winfo_height() // 2) - (150 // 2)
+        x = master.winfo_x() + (master.winfo_width() // 2) - (420 // 2)
+        y = master.winfo_y() + (master.winfo_height() // 2) - (170 // 2)
         self.top.geometry(f"+{x}+{y}")
-
         self.top.grab_set()
 
-        tk.Label(self.top, text="Please select the control hardware:", font=("Arial", 12)).pack(pady=20)
-        
+        tk.Label(self.top, text="Please select the control hardware:",
+                 font=("Arial", 12)).pack(pady=(18, 10))
+
+        # --- Controller buttons ---
         btn_frame = tk.Frame(self.top)
-        btn_frame.pack(pady=10)
+        btn_frame.pack()
+        tk.Button(btn_frame, text="Serial (Texmate/Omega)", width=22,
+                  command=self._select_serial).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Watlow F4T (Network)", width=22,
+                  command=self._show_ip_row).pack(side=tk.LEFT, padx=10)
 
-        tk.Button(btn_frame, text="Serial (Texmate/Omega)", width=20, command=lambda: self.select('serial')).pack(side=tk.LEFT, padx=10)
-        tk.Button(btn_frame, text="Watlow F4T (Network)", width=20, command=lambda: self.select('watlow')).pack(side=tk.LEFT, padx=10)
+        # --- IP row (hidden until Watlow is chosen) ---
+        self._ip_frame = tk.Frame(self.top)
+        # (not packed yet)
 
-    def select(self, controller_type):
-        self.callback(controller_type)
+        tk.Label(self._ip_frame, text="Watlow IP Address:", font=("Arial", 10)).pack(side=tk.LEFT, padx=(10, 4))
+        self._ip_var = tk.StringVar(value=self._DEFAULT_IP)
+        self._ip_entry = tk.Entry(self._ip_frame, textvariable=self._ip_var,
+                                  width=16, font=("Arial", 10))
+        self._ip_entry.pack(side=tk.LEFT, padx=(0, 8))
+        tk.Button(self._ip_frame, text="Connect", width=10,
+                  bg="#1a6b1a", fg="white", font=("Arial", 10),
+                  command=self._select_watlow).pack(side=tk.LEFT, padx=4)
+
+        self._ip_row_visible = False
+
+    # ------------------------------------------------------------------
+    def _show_ip_row(self):
+        """Reveal the IP entry + Connect button below the main buttons."""
+        if not self._ip_row_visible:
+            self._ip_frame.pack(pady=(10, 4))
+            self._ip_row_visible = True
+            # Grow window to fit the new row
+            self.top.geometry("420x215")
+        self._ip_entry.focus()
+        self._ip_entry.selection_range(0, tk.END)
+
+    def _select_serial(self):
+        self.callback('serial', '')
+        self.top.destroy()
+
+    def _select_watlow(self):
+        ip = self._ip_var.get().strip()
+        if not ip:
+            messagebox.showwarning("IP Required",
+                "Please enter the Watlow F4T IP address.", parent=self.top)
+            return
+        self.callback('watlow', ip)
         self.top.destroy()
 
     def on_close(self):
-        self.callback(None)
+        self.callback(None, '')
         self.top.destroy()
 
 class WatlowIPDialog:
@@ -1051,13 +1100,16 @@ class BaseAPGUI:
         self.select_controller()
 
     def select_controller(self):
-        def callback(selection):
+        def callback(selection, ip):
             if selection is None:
                 self.root.destroy()
                 return
 
             self.controller_type = selection
-            print(f"Controller selected: {self.controller_type}")
+            if selection == 'watlow' and ip:
+                self.watlow_ip_address = ip
+            print(f"Controller selected: {self.controller_type}"
+                  + (f"  IP: {self.watlow_ip_address}" if selection == 'watlow' else ""))
             self.root.deiconify()
             self.root.after(200, self.connect_hardware)
 
@@ -1474,6 +1526,14 @@ class BaseAPGUI:
             canvas.create_line(points, fill=self.canvas_configs[view_name]["color"], width=2)
         else: # Handle case with no or single data point
             canvas.create_text(w/2, h/2, text="No data to display", fill="#666677", font=("Arial", 12))
+
+    def redraw_visible_graphs(self):
+        """Redraw whichever graph canvases are currently shown."""
+        if self.view_mode == "ALL":
+            for view_name in self.canvases:
+                self.draw_single_graph(view_name)
+        else:
+            self.draw_single_graph(self.current_view)
 
     def on_click(self):
         print("Button clicked")

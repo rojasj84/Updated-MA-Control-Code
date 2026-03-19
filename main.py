@@ -1174,7 +1174,7 @@ class BaseAPGUI:
         self.power_profile = []
         self.pressure_control_active = False
         self.last_valid_readings = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
-        # Watlow F4T profile status — populated by data_acquisition_loop
+        # Watlow F4T profile sssstatus — populated by data_acquisition_loop
         self.watlow_prof_state      = 0    # 149=Running, 146=Paused, 252=Completed, 253=Terminated
         self.watlow_prof_rem_hrs    = 0    # Total profile time remaining – hours
         self.watlow_prof_rem_min    = 0    # Total profile time remaining – minutes
@@ -1213,7 +1213,7 @@ class BaseAPGUI:
         self.pid_config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pid_config.json")
         self.load_pid_settings()
 
-        # Configure Root
+        # Configure Rootttt
         self.root.configure(bg=self.colors["bg"])
         self.root.geometry("1280x800")
 
@@ -1222,7 +1222,7 @@ class BaseAPGUI:
         
         self.select_controller()
 
-    def select_controller(self):
+    def select_controller(self): #testr
         def callback(selection, ip):
             if selection is None:
                 self.root.destroy()

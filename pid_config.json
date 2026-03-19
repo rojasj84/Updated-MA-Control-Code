@@ -1,0 +1,18 @@
+{
+    "pressure_up": {
+        "Kp": 20.0,
+        "Ki": 2.0
+    },
+    "pressure_down": {
+        "Kp": 20.0,
+        "Ki": 2.0
+    },
+    "temperature_up": {
+        "Kp": 5e-05,
+        "Ki": 0.0
+    },
+    "power_up": {
+        "Kp": 0.01,
+        "Ki": 0.0
+    }
+}

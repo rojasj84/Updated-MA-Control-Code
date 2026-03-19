@@ -42,21 +42,7 @@ _REG_PROF_STEP_TYPE  = 18926   # Step Type enum
 _REG_PROF_TIME_H     = 18928   # Step Time Hours
 _REG_PROF_TIME_M     = 18930   # Step Time Minutes
 _REG_PROF_TIME_S     = 18932   # Step Time Seconds
-# APER Profile Action registers (class 79)
-_REG_PROF_START_NUM  = 16558   # Queue: profile number to start (write 1)
-_REG_PROF_START_STEP = 16560   # Queue: step number to start from (write 1)
-_REG_PROF_START_REQ  = 16562   # Start Action Request: Start=1782
-_REG_PROF_START_P1   = 18486   # Direct Start Profile 1 without queue: Start=1782
-_REG_PROF_STOP_REQ   = 16566   # Stop Action Request: Pause=146, Terminate=148
-_REG_PROF_STATE      = 16568   # Profile State (R): Running=149, Pause=146, Completed=252, Terminated=253
-# APER Profile status readback (all R, contiguous block starting at 16568)
-_REG_PROF_REM_MIN    = 16570   # Total time remaining – minutes portion (0-59)
-_REG_PROF_REM_HRS    = 16572   # Total time remaining – hours portion
-_REG_PROF_CUR_STEP   = 16590   # Current step number
-_REG_PROF_CUR_TYPE   = 16592   # Current step type (same enum as _F4T_TYPE_MAP)
-_REG_PROF_STEP_REM_S = 16622   # Step time remaining – seconds (0-59)
-_REG_PROF_STEP_REM_M = 16624   # Step time remaining – minutes (0-59)
-_REG_PROF_STEP_REM_H = 16626   # Step time remaining – hours
+_REG_PROF_ACTION     = 18910   # Profile Action register (1782 = Start)
 
 # Loop 1 (Temperature) – read 22 registers from 18926, offsets within that block
 _REG_PROF_RATE1      = 18938   # Step Rate 1  (Loop 1 ramp rate,  IEEE float, offset 12)
@@ -420,10 +406,9 @@ class ProfileEditorDialog:
         self.ent_end = tk.Entry(input_frame, width=10, font=("Arial", 10))
         self.ent_end.grid(row=1, column=1, padx=5)
 
-        tk.Label(input_frame, text="Duration (HH:MM):", font=("Arial", 10)).grid(row=0, column=2)
-        self.ent_duration = tk.Entry(input_frame, width=8, font=("Arial", 10))
-        self.ent_duration.grid(row=1, column=2, padx=(5, 0))
-        tk.Label(input_frame, text="hh:mm", font=("Arial", 8), fg="#888888").grid(row=1, column=2, sticky="e", padx=(0, 5))
+        tk.Label(input_frame, text="Duration (hours):", font=("Arial", 10)).grid(row=0, column=2)
+        self.ent_duration = tk.Entry(input_frame, width=10, font=("Arial", 10))
+        self.ent_duration.grid(row=1, column=2, padx=5)
 
         tk.Label(input_frame, text=self.rate_label + ":", font=("Arial", 10)).grid(row=0, column=3)
         self.ent_rate = tk.Entry(input_frame, width=10, font=("Arial", 10))
@@ -479,7 +464,7 @@ class ProfileEditorDialog:
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=7)
         self.tree.heading("start",     text=f"Start {self.value_label}")
         self.tree.heading("end",       text=f"Final {self.value_label}")
-        self.tree.heading("duration",  text="Duration (HH:MM)")
+        self.tree.heading("duration",  text="Duration (hours)")
         self.tree.heading("rate",      text=self.rate_label)
         self.tree.heading("step_type", text="F4T Step Type")
 
@@ -583,12 +568,12 @@ class ProfileEditorDialog:
             if step_type == "Ramp Rate":
                 _wrf(rate_reg, abs(float(seg["rate"])))
             else:
-                # duration is decimal hours → write H and M directly
-                total_m = int(round(seg["duration"] * 60))
-                h, m = divmod(total_m, 60)
+                total_s = int(round(seg["duration"] * 3600))  # hours -> seconds
+                h, rem  = divmod(total_s, 3600)
+                m, s    = divmod(rem, 60)
                 _wr(_REG_PROF_TIME_H, h)
                 _wr(_REG_PROF_TIME_M, m)
-                _wr(_REG_PROF_TIME_S, 0)
+                _wr(_REG_PROF_TIME_S, s)
 
             time.sleep(0.05)
             print(f"  F4T Add step [{step_type}]: end={seg['end']}")
@@ -600,43 +585,6 @@ class ProfileEditorDialog:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # HH:MM duration helpers  (internal unit = decimal hours)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _parse_hhmm(text):
-        """Parse a 'HH:MM' string into decimal hours.  Returns None on failure."""
-        text = text.strip()
-        if not text:
-            return None
-        if ':' in text:
-            parts = text.split(':')
-            if len(parts) == 2:
-                try:
-                    h = int(parts[0])
-                    m = int(parts[1])
-                    if h < 0 or not (0 <= m <= 59):
-                        return None
-                    return h + m / 60.0
-                except ValueError:
-                    return None
-            return None
-        # Accept a bare decimal number as hours (fallback for loaded profiles)
-        try:
-            return float(text)
-        except ValueError:
-            return None
-
-    @staticmethod
-    def _fmt_hhmm(hours):
-        """Convert decimal hours → 'HH:MM' string."""
-        if hours is None:
-            return ""
-        total_m = int(round(hours * 60))
-        h, m = divmod(total_m, 60)
-        return f"{h:02d}:{m:02d}"
 
     def _try_get_float(self, entry):
         try:
@@ -678,7 +626,7 @@ class ProfileEditorDialog:
         self._last_edited = "duration"
         s = self._try_get_float(self.ent_start)
         e = self._try_get_float(self.ent_end)
-        d = self._parse_hhmm(self.ent_duration.get())   # decimal hours
+        d = self._try_get_float(self.ent_duration)
         step_type = self._determine_step_type(s, e, "duration")
         self._update_hint(step_type)
         if step_type == "Soak":
@@ -702,9 +650,9 @@ class ProfileEditorDialog:
             self.ent_rate.insert(0, "0.00")
             return
         if r is not None and abs(r) > 1e-9 and s is not None and e is not None:
-            d = abs(e - s) / abs(r)   # decimal hours
+            d = abs(e - s) / abs(r)
             self.ent_duration.delete(0, tk.END)
-            self.ent_duration.insert(0, self._fmt_hhmm(d))
+            self.ent_duration.insert(0, f"{d:.4f}")
 
     # ------------------------------------------------------------------
     # Segment management
@@ -721,10 +669,11 @@ class ProfileEditorDialog:
                 step_type = self._determine_step_type(s, e, self._last_edited)
 
             if step_type == "Soak":
-                d = self._parse_hhmm(self.ent_duration.get())
-                if d is None:
-                    messagebox.showerror("Error", "Please enter Duration as HH:MM (e.g. 01:30).", parent=self.top)
+                d_str = self.ent_duration.get().strip()
+                if not d_str:
+                    messagebox.showerror("Error", "Please enter a Duration for the Soak step.", parent=self.top)
                     return
+                d = float(d_str)
                 if d <= 0:
                     messagebox.showerror("Error", "Duration must be positive.", parent=self.top)
                     return
@@ -732,6 +681,7 @@ class ProfileEditorDialog:
 
             elif step_type == "Ramp Rate":
                 r_str = self.ent_rate.get().strip()
+                d_str = self.ent_duration.get().strip()
                 if not r_str:
                     messagebox.showerror("Error", "Please enter a Rate.", parent=self.top)
                     return
@@ -739,20 +689,17 @@ class ProfileEditorDialog:
                 if abs(r) < 1e-9:
                     messagebox.showerror("Error", "Rate cannot be zero.", parent=self.top)
                     return
-                # derive duration from rate; fall back to HH:MM field if delta is zero
-                if abs(e - s) > 1e-9:
-                    d = abs(e - s) / abs(r)
-                else:
-                    d = self._parse_hhmm(self.ent_duration.get()) or 0.0
+                d = abs(e - s) / abs(r) if abs(e - s) > 1e-9 else (float(d_str) if d_str else 0.0)
                 if d <= 0:
                     messagebox.showerror("Error", "Calculated duration is zero or negative.", parent=self.top)
                     return
 
             else:  # Ramp Time
-                d = self._parse_hhmm(self.ent_duration.get())
-                if d is None:
-                    messagebox.showerror("Error", "Please enter Duration as HH:MM (e.g. 01:30).", parent=self.top)
+                d_str = self.ent_duration.get().strip()
+                if not d_str:
+                    messagebox.showerror("Error", "Please enter a Duration.", parent=self.top)
                     return
+                d = float(d_str)
                 if d <= 0:
                     messagebox.showerror("Error", "Duration must be positive.", parent=self.top)
                     return
@@ -792,7 +739,7 @@ class ProfileEditorDialog:
             st = step.get("step_type", "Ramp Time")
             self.tree.insert("", tk.END, values=(
                 step["start"], step["end"],
-                self._fmt_hhmm(d), f"{r:.4f}", st
+                f"{d:.4f}", f"{r:.4f}", st
             ))
 
     def clear_all(self):
@@ -1174,15 +1121,6 @@ class BaseAPGUI:
         self.power_profile = []
         self.pressure_control_active = False
         self.last_valid_readings = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
-        # Watlow F4T profile sssstatus — populated by data_acquisition_loop
-        self.watlow_prof_state      = 0    # 149=Running, 146=Paused, 252=Completed, 253=Terminated
-        self.watlow_prof_rem_hrs    = 0    # Total profile time remaining – hours
-        self.watlow_prof_rem_min    = 0    # Total profile time remaining – minutes
-        self.watlow_prof_cur_step   = 0    # Current step number
-        self.watlow_prof_cur_type   = 0    # Current step type code
-        self.watlow_step_rem_hrs    = 0    # Current step time remaining – hours
-        self.watlow_step_rem_min    = 0    # Current step time remaining – minutes
-        self.watlow_step_rem_sec    = 0    # Current step time remaining – seconds
         
         self.manual_voltage_active = False
         # Save Settings Defaults
@@ -1197,6 +1135,17 @@ class BaseAPGUI:
         self.current_target_pressure = None
         self.current_target_temp = None
         self.current_target_power = None
+        
+        self.current_press_time_remaining = None
+        self.current_temp_time_remaining = None
+        self.current_power_time_remaining = None
+
+        self.current_press_segment = None
+        self.current_temp_segment = None
+        self.current_power_segment = None
+        self.press_total_segments = 0
+        self.temp_total_segments = 0
+        self.power_total_segments = 0
 
         # Power Control State
         self.power_control_active = False
@@ -1206,14 +1155,18 @@ class BaseAPGUI:
         
         # Graphing State
         self.current_view = "Temperature"
-        self.data_history = {"Temperature": [], "Pressure": [], "Power": []}
+        self.data_history = {"Temperature": [], "Pressure": [], "Power": [], "Resistance": []}
         self.start_time = time.time()
         self.recording_active = False
+        self.hover_state = {"view": None, "x": None, "y": None}
+        self.zoom_limits = {v: None for v in ["Temperature", "Pressure", "Power", "Resistance"]}
+        self.current_plot_params = {}
+        self.zoom_box_start = None
         
         self.pid_config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pid_config.json")
         self.load_pid_settings()
 
-        # Configure Rootttt
+        # Configure Root
         self.root.configure(bg=self.colors["bg"])
         self.root.geometry("1280x800")
 
@@ -1222,7 +1175,7 @@ class BaseAPGUI:
         
         self.select_controller()
 
-    def select_controller(self): #testr
+    def select_controller(self):
         def callback(selection, ip):
             if selection is None:
                 self.root.destroy()
@@ -1322,8 +1275,15 @@ class BaseAPGUI:
         self.lbl_system_status = tk.Label(graph_ctrl_frame, text="STANDBY", font=("Arial", 12, "bold"), bg=self.colors["card"], fg=self.colors["danger"])
         self.lbl_system_status.pack(side=tk.LEFT, padx=5)
         
-        tk.Button(graph_ctrl_frame, text="RESET VIEW", bg=self.colors["btn_bg"], fg="white", font=("Arial", 9), 
+        tk.Button(graph_ctrl_frame, text="RESET ZOOM / VIEW", bg=self.colors["btn_bg"], fg="white", font=("Arial", 9, "bold"), 
                       command=self.set_all_view, relief="flat").pack(side=tk.RIGHT, padx=2)
+
+        self.time_window_var = tk.StringVar(value="All Time")
+        time_cb = ttk.Combobox(graph_ctrl_frame, textvariable=self.time_window_var, values=["All Time", "Last 1 Min", "Last 5 Min", "Last 10 Min", "Last 30 Min", "Last 1 Hour"], width=12, state="readonly")
+        time_cb.pack(side=tk.RIGHT, padx=5)
+        tk.Label(graph_ctrl_frame, text="TIME WINDOW:", font=("Arial", 9, "bold"), bg=self.colors["card"], fg=self.colors["subtext"]).pack(side=tk.RIGHT, padx=2)
+        time_cb.bind("<<ComboboxSelected>>", lambda e: self.redraw_visible_graphs())
+        tk.Label(graph_ctrl_frame, text="(Right-click & drag to zoom, single right-click to reset)", font=("Arial", 8, "italic"), bg=self.colors["card"], fg=self.colors["subtext"]).pack(side=tk.LEFT, padx=10)
 
         # Canvas Container
         self.graph_container = tk.Frame(graph_card, bg=self.colors["card"])
@@ -1333,13 +1293,20 @@ class BaseAPGUI:
         self.canvas_configs = {
             "Temperature": {"color": self.colors["accent"]},
             "Pressure": {"color": self.colors["success"]},
-            "Power": {"color": "#ff9800"}
+            "Power": {"color": "#ff9800"},
+            "Resistance": {"color": "#00bcd4"}
         }
 
-        for view in ["Temperature", "Pressure", "Power"]:
+        for view in ["Temperature", "Pressure", "Power", "Resistance"]:
             cv = tk.Canvas(self.graph_container, bg=self.colors["card"], highlightthickness=1, highlightbackground=self.colors["bg"])
             cv.bind("<Button-1>", lambda event, v=view: self.toggle_maximize(v))
             cv.bind("<Configure>", lambda event, v=view: self.draw_single_graph(v))
+            cv.bind("<Motion>", lambda event, v=view: self.on_canvas_hover(event, v))
+            cv.bind("<Leave>", lambda event, v=view: self.on_canvas_leave(event, v))
+            
+            cv.bind("<ButtonPress-3>", lambda event, v=view: self.start_zoom_box(event, v))
+            cv.bind("<B3-Motion>", lambda event, v=view: self.update_zoom_box(event, v))
+            cv.bind("<ButtonRelease-3>", lambda event, v=view: self.end_zoom_box(event, v))
             self.canvases[view] = cv
         
         self.update_graph_layout()
@@ -1349,11 +1316,12 @@ class BaseAPGUI:
         readout_container.pack(fill=tk.X, pady=(0, 20))
 
         headers = [
-            ("Temperature (C)", self.colors["accent"]), 
+            ("Temperature (°C)", self.colors["accent"]), 
             ("Pressure (Bars)", self.colors["success"]), 
             ("Voltage (V)", "#ff9800"), 
             ("Current (A)", "#e91e63"), 
-            ("Power (W)", "#9c27b0")
+            ("Power (W)", "#9c27b0"),
+            ("Resistance (Ω)", "#00bcd4")
         ]
         
         self.readout_labels = []
@@ -1387,12 +1355,22 @@ class BaseAPGUI:
         def style_chk(parent, text, var, cmd, color):
             return ToggleSwitch(parent, text=text, variable=var, command=cmd, bg=self.colors["card"], active_color=color)
 
+        def style_time_card(parent, color):
+            card = tk.Frame(parent, bg=self.colors["btn_bg"], padx=10, pady=2, relief="flat", highlightbackground=color, highlightthickness=1)
+            lbl = tk.Label(card, text="", bg=self.colors["btn_bg"], fg=color, font=("Arial", 10, "bold"))
+            lbl.pack()
+            return card, lbl
+
         # Temperature
         style_btn(auto_grid, "Load Temp Profile", self.open_temp_profile).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         
         self.var_auto_temp = tk.BooleanVar(value=False)
         self.chk_auto_temp = style_chk(auto_grid, "Enable Auto Temp", self.var_auto_temp, self.toggle_temp_control_check, self.colors["accent"])
         self.chk_auto_temp.grid(row=0, column=1, padx=5, pady=8, sticky="w")
+
+        self.frm_temp_time, self.lbl_temp_time = style_time_card(auto_grid, self.colors["accent"])
+        self.frm_temp_time.grid(row=0, column=2, padx=10, pady=5, sticky="w")
+        self.frm_temp_time.grid_remove() # Hide initially
 
         # Pressure
         style_btn(auto_grid, "Load Pressure Profile", self.open_pressure_config).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
@@ -1401,12 +1379,20 @@ class BaseAPGUI:
         self.chk_auto_press = style_chk(auto_grid, "Enable Auto Pressure", self.var_auto_press, self.toggle_press_control_check, self.colors["success"])
         self.chk_auto_press.grid(row=1, column=1, padx=5, pady=8, sticky="w")
 
+        self.frm_press_time, self.lbl_press_time = style_time_card(auto_grid, self.colors["success"])
+        self.frm_press_time.grid(row=1, column=2, padx=10, pady=5, sticky="w")
+        self.frm_press_time.grid_remove()
+
         # Power
         style_btn(auto_grid, "Load Power Profile", self.open_power_profile).grid(row=2, column=0, padx=5, pady=5, sticky="ew")
         
         self.var_auto_power = tk.BooleanVar(value=False)
         self.chk_auto_power = style_chk(auto_grid, "Enable Auto Power", self.var_auto_power, self.toggle_power_control_check, "#ff9800")
         self.chk_auto_power.grid(row=2, column=1, padx=5, pady=8, sticky="w")
+
+        self.frm_power_time, self.lbl_power_time = style_time_card(auto_grid, "#ff9800")
+        self.frm_power_time.grid(row=2, column=2, padx=10, pady=5, sticky="w")
+        self.frm_power_time.grid_remove()
 
         # Manual Control Card
         manual_card = tk.Frame(controls_container, bg=self.colors["card"], padx=15, pady=15)
@@ -1440,54 +1426,24 @@ class BaseAPGUI:
         self.manual_voltage_active = not self.manual_voltage_active
         if self.manual_voltage_active:
             self.btn_manual_voltage.config(text="STOP MANUAL CONTROL", bg=self.colors["danger"])
-
-            # --- Bumpless transfer: read current output, write it back, then switch mode ---
-            # For Watlow: read REG_TEMP_MANUAL_POWER BEFORE switching mode.
-            # The register retains its last value regardless of mode, so the
-            # read is valid while still in Auto or Off.  We then write that
-            # same value back to confirm it, and ONLY THEN switch to Manual
-            # (mode 54).  This means the mode switch arrives at exactly the
-            # value that was already in the hardware – zero spike in either
-            # direction.
-            if self.controller_type == 'watlow':
-                with self.serial_lock:
-                    # Step 1: read current value (mode has NOT changed yet)
-                    current_pct = self.watlow_controller.read_float(REG_TEMP_MANUAL_POWER)
-                    if current_pct is None:
-                        current_pct = 0.0
-                    # Clamp to valid range
-                    current_pct = max(0.0, min(100.0, current_pct))
-                    # Step 2: write it back so the register is confirmed before mode switch
-                    self.watlow_controller.write_float(REG_TEMP_MANUAL_POWER, current_pct)
-                    # Step 3: now switch to Manual – hardware is already at current_pct
-                    self.watlow_controller.write_uint16(REG_TEMP_MODE, 54)  # Manual Mode
-                self.ent_target_voltage.delete(0, tk.END)
-                self.ent_target_voltage.insert(0, f"{current_pct:.2f}")
-                print(f"Manual Control activated (bumpless): Watlow output held at {current_pct:.2f}%")
-            else:  # serial
-                # target_voltage is kept in sync by the control loops and quench,
-                # so it already reflects the actual last-commanded voltage.
-                current_v = self.target_voltage
-                self.ent_target_voltage.delete(0, tk.END)
-                self.ent_target_voltage.insert(0, f"{current_v:.2f}")
-                # Write it immediately so the hardware matches the display
-                with self.serial_lock:
-                    self.device_mgr.set_omega_voltage(current_v)
-                print(f"Manual Control activated (bumpless): serial output held at {current_v:.2f}V")
-
             # Disable conflicting auto controls
             if self.power_control_active:
-                self.var_auto_power.set(False)
+                self.var_auto_power.set(False) # This will trigger its command to set self.power_control_active = False
                 print("Auto Power Control disabled for Manual Output Control.")
             if self.temp_control_active:
                 self.var_auto_temp.set(False)
                 self.temp_control_active = False
                 print("Auto Temp Control disabled for Manual Output Control.")
+
+            if self.controller_type == 'watlow':
+                with self.serial_lock:
+                    self.watlow_controller.write_uint16(REG_TEMP_MODE, 54) # Manual Mode
+                print("Watlow controller set to Manual Power mode.")
         else:
             self.btn_manual_voltage.config(text="Start Manual Control", bg=self.colors["success"])
             if self.controller_type == 'watlow':
                 with self.serial_lock:
-                    self.watlow_controller.write_uint16(REG_TEMP_MODE, 10)  # Auto Mode
+                    self.watlow_controller.write_uint16(REG_TEMP_MODE, 10) # Auto Mode
                 print("Watlow controller set back to Auto mode.")
 
     def manual_step_voltage(self, sign):
@@ -1570,14 +1526,9 @@ class BaseAPGUI:
 
         if self.controller_type == 'watlow':
             with self.serial_lock:
-                # Zero the manual power register BEFORE switching mode off so
-                # that if manual control is re-activated later the Watlow's
-                # internal register is already at 0 — no spike on re-entry.
-                self.watlow_controller.write_float(REG_TEMP_MANUAL_POWER, 0.0)
-                self.watlow_controller.write_uint16(REG_TEMP_MODE, 62)  # Mode OFF
-            self.target_voltage = 0.0
-            print("QUENCH executed: Watlow manual power zeroed and loop turned OFF.")
-        else:  # serial
+                self.watlow_controller.write_uint16(REG_TEMP_MODE, 62) # Mode OFF
+            print("QUENCH executed: Watlow loop turned OFF.")
+        else: # serial
             self.target_voltage = 0.0
             with self.serial_lock:
                 self.device_mgr.set_omega_voltage(0.0)
@@ -1585,15 +1536,29 @@ class BaseAPGUI:
 
     def set_all_view(self):
         self.view_mode = "ALL"
+        if hasattr(self, 'time_window_var'):
+            self.time_window_var.set("All Time")
+        for v in self.zoom_limits:
+            self.zoom_limits[v] = None
+        self.update_graph_layout()
+        self.redraw_visible_graphs()
+
+    def toggle_maximize(self, view_name):
+        if self.view_mode == "ALL":
+            self.view_mode = "SINGLE"
+            self.current_view = view_name
+        else:
+            self.view_mode = "ALL"
         self.update_graph_layout()
         self.redraw_visible_graphs()
 
     def update_graph_layout(self):
         for cv in self.canvases.values():
             cv.pack_forget()
+            cv.grid_forget()
         
         if self.view_mode == "ALL":
-            # Grid layout for all three
+            # Grid layout for all four
             self.graph_container.grid_columnconfigure(0, weight=1)
             self.graph_container.grid_columnconfigure(1, weight=1)
             self.graph_container.grid_rowconfigure(0, weight=1)
@@ -1601,9 +1566,9 @@ class BaseAPGUI:
             
             self.canvases["Temperature"].grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=(0, 5))
             self.canvases["Pressure"].grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=(0, 5))
-            self.canvases["Power"].grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(5, 0))
+            self.canvases["Power"].grid(row=1, column=0, sticky="nsew", padx=(0, 5), pady=(5, 0))
+            self.canvases["Resistance"].grid(row=1, column=1, sticky="nsew", padx=(5, 0), pady=(5, 0))
         else: # "SINGLE"
-            self.graph_container.grid_forget() # Clear grid config
             self.canvases[self.current_view].pack(fill=tk.BOTH, expand=True)
 
     def draw_single_graph(self, view_name):
@@ -1616,95 +1581,241 @@ class BaseAPGUI:
         
         # Margins
         x_margin = 40
-        y_margin = 30
+        y_margin = 45
         plot_w = w - x_margin - 20
         plot_h = h - y_margin - 40
         
         # Display names with units
         display_names = {
             "Temperature": "Temperature (°C)",
-            "Pressure": "Pressure (Bar)",
-            "Power": "Power (W)"
+            "Pressure": "Oil Pressure (Bar)",
+            "Power": "Power (W)",
+            "Resistance": "Resistance (Ω)"
         }
         display_text = display_names.get(view_name, view_name)
 
-        # Draw Title
-        canvas.create_text(w/2, 20, text=f"{display_text} vs Time", font=("Arial", 12, "bold"), fill="white")
-
-        # Draw Grid
-        for i in range(1, 5):
-            # Vertical
-            x = i * (w / 5)
-            canvas.create_line(x, 40, x, h-30, fill="#444455", dash=(2, 4))
-
-            # Horizontal
-            y = 40 + i * ((h-70) / 5)
-            canvas.create_line(40, y, w-20, y, fill="#444455", dash=(2, 4))
-
-        # Draw Axes
-        canvas.create_rectangle(40, 40, w-20, h-30, outline="white", width=2)
-        
-        # Axis Labels
-        canvas.create_text(w/2, h-10, text="Time (s)", font=("Arial", 10), fill="#b0b0b0")
-        canvas.create_text(15, h/2, text=display_text, angle=90, font=("Arial", 10), fill="#b0b0b0")
-        
         # Plot Data
         data = self.data_history.get(view_name, [])
-        if len(data) > 1:
-            times = [p[0] for p in data]
-            values = [p[1] for p in data]
+        
+        # Time Window Filtering
+        window_str = getattr(self, 'time_window_var', tk.StringVar(value="All Time")).get()
+        if window_str != "All Time" and data:
+            window_map = {"Last 1 Min": 60, "Last 5 Min": 300, "Last 10 Min": 600, "Last 30 Min": 1800, "Last 1 Hour": 3600}
+            window_sec = window_map.get(window_str, 0)
+            if window_sec > 0:
+                latest_t = data[-1][0]
+                data = [p for p in data if p[0] >= latest_t - window_sec]
+
+        # Box Zoom Filtering
+        zoom = self.zoom_limits.get(view_name)
+        if zoom and data:
+            z_tmin, z_tmax, z_vmin, z_vmax = zoom
+            data_to_plot = [p for p in data if z_tmin - (z_tmax-z_tmin)*0.1 <= p[0] <= z_tmax + (z_tmax-z_tmin)*0.1]
+        else:
+            data_to_plot = data
+
+        if len(data_to_plot) > 1:
+            times = [p[0] for p in data_to_plot]
+            values = [p[1] for p in data_to_plot]
             
-            # Auto-scale
-            min_t, max_t = times[0], times[-1]
-            min_v, max_v = min(values), max(values)
+            if zoom:
+                min_t, max_t = z_tmin, z_tmax
+                display_min_v, display_max_v = z_vmin, z_vmax
+            else:
+                min_t, max_t = times[0], times[-1]
+                min_v, max_v = min(values), max(values)
+                
+                if max_v > 0: display_max_v = max_v * 1.1
+                elif max_v < 0: display_max_v = max_v * 0.9
+                else: display_max_v = 1.0
+
+                v_range_for_padding = display_max_v - min_v
+                display_min_v = min_v - v_range_for_padding * 0.05
+
+                if (display_max_v - display_min_v) < 1e-6:
+                    display_max_v = max_v + 0.5
+                    display_min_v = min_v - 0.5
+                if max_t == min_t: max_t += 1.0
+                
+            x_plot_range = max_t - min_t
+            if x_plot_range == 0: x_plot_range = 1.0
+            y_plot_range = display_max_v - display_min_v
+            if y_plot_range == 0: y_plot_range = 1.0
             
-            # --- Y-Axis Scaling ---
-            # Set top of graph 10% higher than max value, per request
-            if max_v > 0:
-                display_max_v = max_v * 1.1
-            elif max_v < 0:
-                display_max_v = max_v * 0.9 # Closer to zero
-            else: # max_v is 0
-                display_max_v = 1.0
+            self.current_plot_params[view_name] = {
+                "min_t": min_t, "x_plot_range": x_plot_range, "plot_w": plot_w, "x_margin": x_margin,
+                "display_min_v": display_min_v, "y_plot_range": y_plot_range, "plot_h": plot_h,
+                "y_margin": y_margin, "h": h
+            }
 
-            # Pad the bottom slightly for better appearance
-            v_range_for_padding = display_max_v - min_v
-            display_min_v = min_v - v_range_for_padding * 0.05
+            # --- Draw Data Lines ---
+            points = []
+            for t, v in data_to_plot:
+                x = x_margin + (t - min_t) / x_plot_range * plot_w
+                y = (h - y_margin) - (v - display_min_v) / y_plot_range * plot_h
+                points.extend([x, y])
+            canvas.create_line(points, fill=self.canvas_configs[view_name]["color"], width=2)
+            
+            # --- Masks to hide overspill ---
+            canvas.create_rectangle(0, 0, w, 40, fill=self.colors["card"], outline="") # Top
+            canvas.create_rectangle(0, h-y_margin, w, h, fill=self.colors["card"], outline="") # Bottom
+            canvas.create_rectangle(0, 0, x_margin, h, fill=self.colors["card"], outline="") # Left
+            canvas.create_rectangle(w-20, 0, w, h, fill=self.colors["card"], outline="") # Right
 
-            # Handle flat lines or very small ranges
-            if (display_max_v - display_min_v) < 1e-6:
-                display_max_v = max_v + 0.5
-                display_min_v = min_v - 0.5
-
-            # --- X-Axis Scaling ---
-            if max_t == min_t: max_t += 1.0
+            # --- Title & Labels ---
+            canvas.create_text(w/2, 20, text=f"{display_text} vs Time", font=("Arial", 12, "bold"), fill="white")
+            canvas.create_text(w/2, h-5, text="Time (HH:MM:SS)", font=("Arial", 10), fill="#b0b0b0", anchor="s")
+            canvas.create_text(15, h/2, text=display_text, angle=90, font=("Arial", 10), fill="#b0b0b0")
 
             # --- Draw Axis Ticks and Labels ---
             num_ticks = 5
-            # Y-Axis Ticks
-            y_plot_range = display_max_v - display_min_v
             for i in range(num_ticks):
                 val = display_min_v + (i / (num_ticks - 1)) * y_plot_range
                 y_pos = (h - y_margin) - (i / (num_ticks - 1)) * plot_h
                 canvas.create_text(x_margin - 5, y_pos, text=f"{val:.1f}", anchor="e", fill="#b0b0b0", font=("Arial", 8))
             
-            # X-Axis Ticks
-            x_plot_range = max_t - min_t
             for i in range(num_ticks):
                 val = min_t + (i / (num_ticks - 1)) * x_plot_range
                 x_pos = x_margin + (i / (num_ticks - 1)) * plot_w
-                canvas.create_text(x_pos, h - y_margin + 10, text=f"{val:.0f}", anchor="n", fill="#b0b0b0", font=("Arial", 8))
+                
+                time_str = time.strftime("%H:%M:%S", time.localtime(self.start_time + val))
+                canvas.create_text(x_pos, h - y_margin + 10, text=time_str, anchor="n", fill="#b0b0b0", font=("Arial", 8))
 
-            # --- Plotting ---
-            points = []
-            for t, v in data:
-                x = x_margin + (t - min_t) / x_plot_range * plot_w
-                y = (h - y_margin) - (v - display_min_v) / y_plot_range * plot_h
-                points.extend([x, y])
-            
-            canvas.create_line(points, fill=self.canvas_configs[view_name]["color"], width=2)
+            # --- Draw Grid ---
+            for i in range(1, num_ticks - 1):
+                x = x_margin + (i / (num_ticks - 1)) * plot_w
+                canvas.create_line(x, 40, x, h-y_margin, fill="#444455", dash=(2, 4))
+                y = (h - y_margin) - (i / (num_ticks - 1)) * plot_h
+                canvas.create_line(x_margin, y, w-20, y, fill="#444455", dash=(2, 4))
+
+            # --- Draw Axes Rectangle ---
+            canvas.create_rectangle(x_margin, 40, w-20, h-y_margin, outline="white", width=2)
+
         else: # Handle case with no or single data point
+            canvas.create_text(w/2, 20, text=f"{display_text} vs Time", font=("Arial", 12, "bold"), fill="white")
+            canvas.create_rectangle(x_margin, 40, w-20, h-y_margin, outline="white", width=2)
             canvas.create_text(w/2, h/2, text="No data to display", fill="#666677", font=("Arial", 12))
+
+        self.draw_tooltip(view_name)
+
+    def on_canvas_hover(self, event, view_name):
+        self.hover_state = {"view": view_name, "x": event.x, "y": event.y}
+        self.draw_tooltip(view_name)
+
+    def on_canvas_leave(self, event, view_name):
+        self.hover_state = {"view": None, "x": None, "y": None}
+        canvas = self.canvases[view_name]
+        canvas.delete("tooltip")
+
+    def draw_tooltip(self, view_name):
+        if self.hover_state["view"] != view_name or self.hover_state["x"] is None:
+            return
+            
+        canvas = self.canvases[view_name]
+        canvas.delete("tooltip")
+        
+        plot_info = self.current_plot_params.get(view_name)
+        if not plot_info: return
+        
+        data = self.data_history.get(view_name, [])
+        if len(data) < 2: return
+        
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        hx = self.hover_state["x"]
+        hy = self.hover_state["y"]
+        
+        min_t, x_plot_range = plot_info["min_t"], plot_info["x_plot_range"]
+        display_min_v, y_plot_range = plot_info["display_min_v"], plot_info["y_plot_range"]
+        plot_w, plot_h = plot_info["plot_w"], plot_info["plot_h"]
+        x_margin, y_margin = plot_info["x_margin"], plot_info["y_margin"]
+
+        # Check if inside plot area
+        if hx < x_margin or hx > w - 20 or hy < 40 or hy > h - y_margin:
+            return
+            
+        # Estimate t from hx
+        t_est = min_t + ((hx - x_margin) / plot_w) * x_plot_range
+        
+        # Find closest point
+        closest_point = min(data, key=lambda p: abs(p[0] - t_est))
+        t_val, v_val = closest_point
+        
+        px = x_margin + (t_val - min_t) / x_plot_range * plot_w
+        py = (h - y_margin) - (v_val - display_min_v) / y_plot_range * plot_h
+        
+        # Only show tooltip if mouse is reasonably close to the point in X
+        if abs(hx - px) > 20:
+            return
+            
+        # Draw dot
+        r = 4
+        canvas.create_oval(px-r, py-r, px+r, py+r, fill=self.colors["accent"], outline="white", tags="tooltip")
+        
+        # Tooltip text
+        time_str = time.strftime("%H:%M:%S", time.localtime(self.start_time + t_val))
+        text = f"Time: {time_str}\nValue: {v_val:.2f}"
+        
+        # Tooltip positioning
+        text_x = px + 10
+        text_y = py - 10
+        anchor = "sw"
+        if text_x > w - 80:
+            text_x = px - 10
+            anchor = "se"
+        if text_y < 60:
+            text_y = py + 10
+            anchor = "nw" if anchor == "sw" else "ne"
+            
+        text_id = canvas.create_text(text_x, text_y, text=text, anchor=anchor, fill="white", font=("Arial", 9), tags="tooltip")
+        bbox = canvas.bbox(text_id)
+        if bbox:
+            pad = 4
+            bg_id = canvas.create_rectangle(bbox[0]-pad, bbox[1]-pad, bbox[2]+pad, bbox[3]+pad, fill=self.colors["btn_bg"], outline=self.colors["subtext"], tags="tooltip")
+            canvas.tag_lower(bg_id, text_id)
+
+    def start_zoom_box(self, event, view_name):
+        self.zoom_box_start = (event.x, event.y)
+
+    def update_zoom_box(self, event, view_name):
+        canvas = self.canvases[view_name]
+        canvas.delete("zoom_box")
+        if self.zoom_box_start:
+            x0, y0 = self.zoom_box_start
+            canvas.create_rectangle(x0, y0, event.x, event.y, outline=self.colors["accent"], dash=(2, 2), tags="zoom_box")
+
+    def end_zoom_box(self, event, view_name):
+        canvas = self.canvases[view_name]
+        canvas.delete("zoom_box")
+        if not self.zoom_box_start: return
+        
+        x0, y0 = self.zoom_box_start
+        x1, y1 = event.x, event.y
+        self.zoom_box_start = None
+        
+        if abs(x1 - x0) < 10 or abs(y1 - y0) < 10:
+            self.zoom_limits[view_name] = None
+            self.redraw_visible_graphs()
+            return
+
+        plot_info = self.current_plot_params.get(view_name)
+        if not plot_info: return
+        
+        w, h = canvas.winfo_width(), canvas.winfo_height()
+        x_m, y_m = plot_info["x_margin"], plot_info["y_margin"]
+        pw, ph = plot_info["plot_w"], plot_info["plot_h"]
+        
+        x0, x1 = max(x_m, min(w - 20, x0)), max(x_m, min(w - 20, x1))
+        y0, y1 = max(40, min(h - y_m, y0)), max(40, min(h - y_m, y1))
+        
+        t0 = plot_info["min_t"] + ((min(x0, x1) - x_m) / pw) * plot_info["x_plot_range"]
+        t1 = plot_info["min_t"] + ((max(x0, x1) - x_m) / pw) * plot_info["x_plot_range"]
+        
+        v0 = plot_info["display_min_v"] + ((h - y_m - max(y0, y1)) / ph) * plot_info["y_plot_range"]
+        v1 = plot_info["display_min_v"] + ((h - y_m - min(y0, y1)) / ph) * plot_info["y_plot_range"]
+        
+        self.zoom_limits[view_name] = (t0, t1, v0, v1)
+        self.redraw_visible_graphs()
 
     def redraw_visible_graphs(self):
         """Redraw whichever graph canvases are currently shown."""
@@ -1723,37 +1834,19 @@ class BaseAPGUI:
                 messagebox.showwarning("Warning", "No temperature profile loaded.", parent=self.root)
                 self.var_auto_temp.set(False)
                 return
-
+            self.temp_control_active = True
+            
             # Disable conflicting power control
             if self.power_control_active:
                 self.power_control_active = False
                 self.var_auto_power.set(False)
                 print("Auto Power Control disabled (Temperature Control taking over).")
-
-            self.temp_start_time = time.time()
-            self.temp_control_active = True
-
-            if self.controller_type == 'watlow' and self.watlow_controller:
-                # Fire the F4T's own profile engine — queue Profile 1 step 1
-                # then issue Start Action Request (APER regs 16558/16560/16562).
-                # The F4T handles all ramping internally; we do NOT write SP each cycle.
-                with self.serial_lock:
-                    self.watlow_controller.write_uint16(_REG_PROF_START_NUM,  1)     # profile 1
-                    self.watlow_controller.write_uint16(_REG_PROF_START_STEP, 1)     # from step 1
-                    self.watlow_controller.write_uint16(_REG_PROF_START_REQ,  1782)  # Start
-                print("Auto Temp started: Watlow Profile 1 started via APER Start Action Request.")
-            else:
-                print(f"Auto Temp started: serial control, {len(self.temperature_profile)} segment(s).")
+                
+            if not self.recording_active and not self.pressure_control_active and not self.power_control_active:
+                self.start_time = time.time()
         else:
             self.temp_control_active = False
             self.current_target_temp = None
-            self.current_temp_time_remaining = None
-            self.current_temp_segment = None
-            if self.controller_type == 'watlow' and self.watlow_controller:
-                # Terminate the running profile on the F4T
-                with self.serial_lock:
-                    self.watlow_controller.write_uint16(_REG_PROF_STOP_REQ, 148)  # Terminate
-                print("Auto Temp stopped: Watlow Profile terminated.")
 
     def toggle_press_control_check(self):
         if self.var_auto_press.get():
@@ -1761,36 +1854,16 @@ class BaseAPGUI:
                 messagebox.showwarning("Warning", "No pressure profile loaded.", parent=self.root)
                 self.var_auto_press.set(False)
                 return
-
-            self.press_start_time = time.time()
-            self.press_prev_error = None
             self.pressure_control_active = True
-
-            if self.controller_type == 'watlow' and self.watlow_controller:
-                # Fire the F4T's own profile engine — queue Profile 1 step 1
-                # then issue Start Action Request (APER regs 16558/16560/16562).
-                # The F4T handles all ramping internally; we do NOT write SP each cycle.
-                with self.serial_lock:
-                    self.watlow_controller.write_uint16(_REG_PROF_START_NUM,  1)     # profile 1
-                    self.watlow_controller.write_uint16(_REG_PROF_START_STEP, 1)     # from step 1
-                    self.watlow_controller.write_uint16(_REG_PROF_START_REQ,  1782)  # Start
-                print("Auto Pressure started: Watlow Profile 1 started via APER Start Action Request.")
-            else:
-                print(f"Auto Pressure started: serial motor PID, {len(self.pressure_profile)} segment(s).")
+            self.press_prev_error = None
+            if not self.recording_active and not self.temp_control_active and not self.power_control_active:
+                self.start_time = time.time()
         else:
             self.pressure_control_active = False
             self.current_target_pressure = None
-            self.current_press_time_remaining = None
-            self.current_press_segment = None
             self.press_prev_error = None
-            if self.controller_type == 'watlow' and self.watlow_controller:
-                # Terminate the running profile on the F4T
-                with self.serial_lock:
-                    self.watlow_controller.write_uint16(_REG_PROF_STOP_REQ, 148)  # Terminate
-                print("Auto Pressure stopped: Watlow Profile terminated.")
-            else:
-                self.motor_mgr.reset_hardware()
-                print("Auto Pressure Control Disabled. Valves closed and motors reset.")
+            self.motor_mgr.reset_hardware()
+            print("Auto Pressure Control Disabled. Valves closed and motors reset.")
 
     def toggle_power_control_check(self):
         if self.var_auto_power.get():
@@ -1825,7 +1898,7 @@ class BaseAPGUI:
 
     def execute_start_process(self):
         """Starts recording data and plotting (called after settings are confirmed)."""
-        self.data_history = {"Temperature": [], "Pressure": [], "Power": []}
+        self.data_history = {"Temperature": [], "Pressure": [], "Power": [], "Resistance": []}
         self.start_time = time.time()
         self.recording_active = True
 
@@ -1879,6 +1952,14 @@ class BaseAPGUI:
         self.current_target_pressure = None
         self.current_target_temp = None
         self.current_target_power = None
+        
+        self.current_press_time_remaining = None
+        self.current_temp_time_remaining = None
+        self.current_power_time_remaining = None
+        
+        self.current_press_segment = None
+        self.current_temp_segment = None
+        self.current_power_segment = None
         self.press_prev_error = None
 
         self.recording_active = False
@@ -1954,37 +2035,6 @@ class BaseAPGUI:
                     data_snapshot[4] = self.watlow_controller.read_float(REG_AMPS)
                     data_snapshot[5] = 0.0 # No equivalent for Omega readback
 
-                    # Read current output % while temp profile is running
-                    if self.temp_control_active:
-                        try:
-                            pwr = self.watlow_controller.read_float(REG_TEMP_MANUAL_POWER)
-                            if pwr is not None:
-                                data_snapshot['temp_manual_power'] = pwr
-                        except Exception:
-                            pass
-
-                    # Read profile status registers when a profile is active.
-                    if self.temp_control_active or self.pressure_control_active:
-                        try:
-                            state   = self.watlow_controller.read_uint16(_REG_PROF_STATE)
-                            rem_min = self.watlow_controller.read_uint16(_REG_PROF_REM_MIN)
-                            rem_hrs = self.watlow_controller.read_uint16(_REG_PROF_REM_HRS)
-                            cur_stp = self.watlow_controller.read_uint16(_REG_PROF_CUR_STEP)
-                            cur_typ = self.watlow_controller.read_uint16(_REG_PROF_CUR_TYPE)
-                            stp_s   = self.watlow_controller.read_uint16(_REG_PROF_STEP_REM_S)
-                            stp_m   = self.watlow_controller.read_uint16(_REG_PROF_STEP_REM_M)
-                            stp_h   = self.watlow_controller.read_uint16(_REG_PROF_STEP_REM_H)
-                            data_snapshot['prof_state']    = state
-                            data_snapshot['prof_rem_min']  = rem_min
-                            data_snapshot['prof_rem_hrs']  = rem_hrs
-                            data_snapshot['prof_cur_step'] = cur_stp
-                            data_snapshot['prof_cur_type'] = cur_typ
-                            data_snapshot['step_rem_s']    = stp_s
-                            data_snapshot['step_rem_m']    = stp_m
-                            data_snapshot['step_rem_h']    = stp_h
-                        except Exception as _prof_exc:
-                            print(f"Profile status read error: {_prof_exc}")
-
                 elif self.controller_type == 'serial':
                     port_mapping = [1, 2, 3, 4, 5]
                     for port in port_mapping:
@@ -2027,8 +2077,8 @@ class BaseAPGUI:
             for i, port in enumerate(port_mapping):
                 val_str = latest_data.get(port, "---")
                 
-                # Update labels (except Resistance at index 4, which is calculated)
-                if i != 4:
+                # Update labels (skip calculated values for Power/Resistance)
+                if i < 4:
                     self.readout_labels[i].config(text=val_str)
                 
                 # Parse values for control loop (Port 3=Volts, Port 4=Amps)
@@ -2049,51 +2099,6 @@ class BaseAPGUI:
                 except (ValueError, TypeError):
                     pass
             
-        # Parse Watlow profile status from snapshot
-        if latest_data and self.controller_type == 'watlow':
-            # Show live output % in the manual control entry while temp profile runs
-            # and the user is not actively using manual control
-            if (self.temp_control_active and not self.manual_voltage_active
-                    and 'temp_manual_power' in latest_data):
-                pwr_val = latest_data['temp_manual_power']
-                pwr_str = f"{pwr_val:.1f}"
-                # Only update if the value has changed to avoid cursor flicker
-                if self.ent_target_voltage.get() != pwr_str:
-                    self.ent_target_voltage.delete(0, tk.END)
-                    self.ent_target_voltage.insert(0, pwr_str)
-
-            if 'prof_state' in latest_data:
-                self.watlow_prof_state    = latest_data['prof_state']
-            if 'prof_rem_min' in latest_data:
-                self.watlow_prof_rem_min  = latest_data['prof_rem_min']
-            if 'prof_rem_hrs' in latest_data:
-                self.watlow_prof_rem_hrs  = latest_data['prof_rem_hrs']
-            if 'prof_cur_step' in latest_data:
-                self.watlow_prof_cur_step = latest_data['prof_cur_step']
-            if 'prof_cur_type' in latest_data:
-                self.watlow_prof_cur_type = latest_data['prof_cur_type']
-            if 'step_rem_s' in latest_data:
-                self.watlow_step_rem_sec  = latest_data['step_rem_s']
-            if 'step_rem_m' in latest_data:
-                self.watlow_step_rem_min  = latest_data['step_rem_m']
-            if 'step_rem_h' in latest_data:
-                self.watlow_step_rem_hrs  = latest_data['step_rem_h']
-
-            # Detect profile completion from F4T state (252=Completed, 253=Terminated)
-            if self.watlow_prof_state in (252, 253):
-                if self.temp_control_active:
-                    state_name = "Completed" if self.watlow_prof_state == 252 else "Terminated"
-                    print(f"Watlow Temperature Profile {state_name}.")
-                    self.temp_control_active = False
-                    self.var_auto_temp.set(False)
-                    self.current_target_temp = None
-                if self.pressure_control_active:
-                    state_name = "Completed" if self.watlow_prof_state == 252 else "Terminated"
-                    print(f"Watlow Pressure Profile {state_name}.")
-                    self.pressure_control_active = False
-                    self.var_auto_press.set(False)
-                    self.current_target_pressure = None
-
         # Calculate Power
         current_power = meas_volts * meas_amps
 
@@ -2101,21 +2106,29 @@ class BaseAPGUI:
         meas_res = 0.0
         if abs(meas_amps) > 0.0001:
             meas_res = meas_volts / meas_amps
+            self.readout_labels[5].config(text=f"{meas_res:.4f}")
+        else:
+            self.readout_labels[5].config(text="---")
+            
         self.readout_labels[4].config(text=f"{current_power:.2f}")
 
         # Pressure Control Loop (Profile Execution)
         if self.pressure_control_active and self.pressure_profile:
-            elapsed_hours = (time.time() - self.press_start_time) / 3600.0
+            elapsed_hours = (time.time() - self.start_time) / 3600.0
             target_pressure = 0.0
             accumulated_time = 0.0
             active_segment = None
+            time_remaining_hours = 0.0
+            current_seg_idx = 0
             
-            for segment in self.pressure_profile:
+            for i, segment in enumerate(self.pressure_profile):
                 duration = segment['duration']
                 if elapsed_hours < (accumulated_time + duration):
                     time_in_seg = elapsed_hours - accumulated_time
                     target_pressure = segment['start'] + (segment['rate'] * time_in_seg)
                     active_segment = segment
+                    time_remaining_hours = (accumulated_time + duration) - elapsed_hours
+                    current_seg_idx = i + 1
                     break
                 accumulated_time += duration
             
@@ -2124,15 +2137,21 @@ class BaseAPGUI:
                 self.pressure_control_active = False
                 self.var_auto_press.set(False)
                 self.current_target_pressure = None
+                self.current_press_time_remaining = None
+                self.current_press_segment = None
                 self.press_prev_error = None
-                if self.controller_type != 'watlow':
-                    self.motor_mgr.reset_hardware()
-                    print("Hardware Reset Executed.")
+                self.motor_mgr.reset_hardware()
+                print("Hardware Reset Executed.")
             else:
                 self.current_target_pressure = target_pressure
+                self.current_press_time_remaining = time_remaining_hours * 60.0
+                self.current_press_segment = current_seg_idx
+                self.press_total_segments = len(self.pressure_profile)
                 if self.controller_type == 'watlow':
-                    # F4T is running Profile 1 internally — do not write SP here.
-                    pass
+                    with self.serial_lock:
+                        if self.watlow_controller.read_uint16(REG_PRESSURE_MODE) != 10:
+                            self.watlow_controller.write_uint16(REG_PRESSURE_MODE, 10)
+                        self.watlow_controller.write_float(REG_PRESSURE_SP, target_pressure)
                 else: # serial – motor PID control
                     control_interval = 2.0
                     if current_time - self.last_pressure_control_time >= control_interval:
@@ -2192,46 +2211,41 @@ class BaseAPGUI:
                                 self.debug_win.log(f"AutoPress DOWN: Target={target_pressure:.1f} Meas={meas_press:.1f} Err={error:.2f} -> CMD: {cmd}")
 
         # Temperature Control Loop (Profile Execution)
-        # For Watlow: the F4T runs the profile internally — completion is detected
-        # via watlow_prof_state (252/253) set above.  Do not run the software
-        # elapsed-time check here or it will immediately "complete" the profile.
-        # For serial: durations are stored in decimal hours.
         if self.temp_control_active and self.temperature_profile:
-            if self.controller_type == 'watlow':
-                # Nothing to do — F4T handles ramping and timing.
-                # Status display vars (current_target_temp etc.) are updated
-                # from the live F4T registers via update_system_status.
-                pass
-            else:  # serial – software elapsed-time tracking
-                elapsed_hours = (time.time() - self.temp_start_time) / 3600.0
-                target_temp = 0.0
-                accumulated_time = 0.0
-                active_segment = None
-                time_remaining_hours = 0.0
-                current_seg_idx = 0
-                for i, segment in enumerate(self.temperature_profile):
-                    duration = segment['duration']   # decimal hours
-                    if elapsed_hours < (accumulated_time + duration):
-                        time_in_seg = elapsed_hours - accumulated_time
-                        target_temp = segment['start'] + (segment['rate'] * time_in_seg)
-                        active_segment = segment
-                        time_remaining_hours = (accumulated_time + duration) - elapsed_hours
-                        current_seg_idx = i + 1
-                        break
-                    accumulated_time += duration
-                if active_segment is None:
-                    print("Temperature Profile Completed.")
-                    self.temp_control_active = False
-                    self.var_auto_temp.set(False)
-                    self.current_target_temp = None
-                    self.current_temp_time_remaining = None
-                    self.current_temp_segment = None
-                else:
-                    self.current_target_temp = target_temp
-                    self.current_temp_time_remaining = time_remaining_hours * 60.0  # → minutes for display
-                    self.current_temp_segment = current_seg_idx
-                    self.temp_total_segments = len(self.temperature_profile)
-
+            elapsed_hours = (time.time() - self.start_time) / 3600.0
+            target_temp = 0.0
+            accumulated_time = 0.0
+            active_segment = None
+            time_remaining_hours = 0.0
+            current_seg_idx = 0
+            for i, segment in enumerate(self.temperature_profile):
+                duration = segment['duration']
+                if elapsed_hours < (accumulated_time + duration):
+                    time_in_seg = elapsed_hours - accumulated_time
+                    target_temp = segment['start'] + (segment['rate'] * time_in_seg)
+                    active_segment = segment
+                    time_remaining_hours = (accumulated_time + duration) - elapsed_hours
+                    current_seg_idx = i + 1
+                    break
+                accumulated_time += duration
+            if active_segment is None:
+                print("Temperature Profile Completed.")
+                self.temp_control_active = False
+                self.var_auto_temp.set(False)
+                self.current_target_temp = None
+                self.current_temp_time_remaining = None
+                self.current_temp_segment = None
+            else:
+                self.current_target_temp = target_temp
+                self.current_temp_time_remaining = time_remaining_hours * 60.0
+                self.current_temp_segment = current_seg_idx
+                self.temp_total_segments = len(self.temperature_profile)
+                if self.controller_type == 'watlow':
+                    with self.serial_lock:
+                        if self.watlow_controller.read_uint16(REG_TEMP_MODE) != 10:
+                            self.watlow_controller.write_uint16(REG_TEMP_MODE, 10)
+                        self.watlow_controller.write_float(REG_TEMP_SP, target_temp)
+                else: # serial – voltage PID control
                     error = target_temp - meas_temp
                     Kp = self.pid_settings["temperature_up"]["Kp"]
                     adjustment = error * Kp
@@ -2250,12 +2264,16 @@ class BaseAPGUI:
             target_power = 0.0
             accumulated_time = 0.0
             active_segment = None
-            for segment in self.power_profile:
+            time_remaining_hours = 0.0
+            current_seg_idx = 0
+            for i, segment in enumerate(self.power_profile):
                 duration = segment['duration']
                 if elapsed_hours < (accumulated_time + duration):
                     time_in_seg = elapsed_hours - accumulated_time
                     target_power = segment['start'] + (segment['rate'] * time_in_seg)
                     active_segment = segment
+                    time_remaining_hours = (accumulated_time + duration) - elapsed_hours
+                    current_seg_idx = i + 1
                     break
                 accumulated_time += duration
             if active_segment is None:
@@ -2263,9 +2281,14 @@ class BaseAPGUI:
                 self.power_control_active = False
                 self.var_auto_power.set(False)
                 self.current_target_power = None
+                self.current_power_time_remaining = None
+                self.current_power_segment = None
             else:
                 self.target_power_watts = target_power
                 self.current_target_power = target_power
+                self.current_power_time_remaining = time_remaining_hours * 60.0
+                self.current_power_segment = current_seg_idx
+                self.power_total_segments = len(self.power_profile)
         
         if self.recording_active:
             if (current_time - self.last_display_update_time) >= 1.0:
@@ -2274,6 +2297,7 @@ class BaseAPGUI:
                 self.data_history["Temperature"].append((timestamp, meas_temp))
                 self.data_history["Pressure"].append((timestamp, meas_press))
                 self.data_history["Power"].append((timestamp, current_power))
+                self.data_history["Resistance"].append((timestamp, meas_res))
                 
                 for key in self.data_history:
                     if len(self.data_history[key]) > 7200:
@@ -2338,10 +2362,10 @@ class BaseAPGUI:
         if self.controller_type == 'watlow':
             self.btn_thermocouple_config.config(state="disabled")
             # Update labels for manual control
-            tk.Label(self.ent_target_voltage.master, text="Output (%):", bg=self.colors["card"], fg="white", font=("Arial", 12)).pack(side=tk.LEFT)
+            tk.Label(self.ent_target_voltage.master, text="Output (%):", bg=self.colors["card"], fg="white", font=("Arial", 12)).pack(side=tk.LEFT, before=self.ent_target_voltage)
         else:
             self.btn_thermocouple_config.config(state="normal")
-            tk.Label(self.ent_target_voltage.master, text="Output (V):", bg=self.colors["card"], fg="white", font=("Arial", 12)).pack(side=tk.LEFT)
+            tk.Label(self.ent_target_voltage.master, text="Output:", bg=self.colors["card"], fg="white", font=("Arial", 12)).pack(side=tk.LEFT, before=self.ent_target_voltage)
 
     def update_voltage_state(self, new_voltage):
         """Callback to update target voltage from Manual Control Dialog."""
@@ -2350,100 +2374,77 @@ class BaseAPGUI:
     def update_system_status(self):
         """Updates the status bar text based on active flags."""
         states = []
-
-        def fmt_hms(h, m, s=0):
-            """Format hours/minutes/seconds into a compact string."""
-            total_m = int(h) * 60 + int(m)
-            if total_m >= 60:
-                return f"{int(h)}h {int(m):02d}m"
+        
+        def format_time(mins):
+            if mins is None: return ""
+            if mins >= 60:
+                h = int(mins // 60)
+                m = int(mins % 60)
+                return f"{h}h {m}m"
             else:
-                if s:
-                    return f"{int(m)}m {int(s):02d}s"
-                return f"{int(m)}m"
-
-        def fmt_mins(mins):
-            """Format a float-minutes value into a compact string."""
-            if mins is None:
-                return ""
-            h = int(mins) // 60
-            m = int(mins) % 60
-            s = int((mins * 60) % 60)
-            if h:
-                return f"{h}h {m:02d}m"
-            return f"{m}m {s:02d}s"
+                m = int(mins)
+                s = int((mins * 60) % 60)
+                return f"{m}m {s}s"
 
         if self.pressure_control_active:
-            if self.controller_type == 'watlow':
-                # Show timing from the F4T's own profile engine
-                step_rem  = fmt_hms(self.watlow_step_rem_hrs,
-                                    self.watlow_step_rem_min,
-                                    self.watlow_step_rem_sec)
-                total_rem = fmt_hms(self.watlow_prof_rem_hrs,
-                                    self.watlow_prof_rem_min)
-                step_type_name = _F4T_TYPE_MAP.get(self.watlow_prof_cur_type, "—")
-                states.append(
-                    f"AUTO PRESS | {step_type_name}  Step: {step_rem}  Total: {total_rem}")
+            if getattr(self, 'current_target_pressure', None) is not None:
+                rem_str = format_time(self.current_press_time_remaining)
+                states.append(f"AUTO PRESS ({self.current_target_pressure:.1f} Bar)")
+                self.lbl_press_time.config(text=f"Seg {self.current_press_segment}/{self.press_total_segments} ⏱ {rem_str}")
+                self.frm_press_time.grid()
             else:
-                if getattr(self, 'current_target_pressure', None) is not None:
-                    rem = fmt_mins(getattr(self, 'current_press_time_remaining', None))
-                    seg = getattr(self, 'current_press_segment', '?')
-                    tot = getattr(self, 'press_total_segments', '?')
-                    states.append(
-                        f"AUTO PRESS ({self.current_target_pressure:.1f} Bar)"
-                        + (f" | Seg {seg}/{tot}  {rem}" if rem else ""))
-                else:
-                    states.append("AUTO PRESS")
-
+                states.append("AUTO PRESS")
+                self.frm_press_time.grid_remove()
+        else:
+            self.frm_press_time.grid_remove()
+        
         if self.power_control_active:
             if getattr(self, 'current_target_power', None) is not None:
-                rem = fmt_mins(getattr(self, 'current_power_time_remaining', None))
-                seg = getattr(self, 'current_power_segment', '?')
-                tot = getattr(self, 'power_total_segments', '?')
-                states.append(
-                    f"AUTO POWER ({self.current_target_power:.1f} W)"
-                    + (f" | Seg {seg}/{tot}  {rem}" if rem else ""))
+                rem_str = format_time(self.current_power_time_remaining)
+                states.append(f"AUTO POWER ({self.current_target_power:.1f} W)")
+                self.lbl_power_time.config(text=f"Seg {self.current_power_segment}/{self.power_total_segments} ⏱ {rem_str}")
+                self.frm_power_time.grid()
             else:
                 states.append("AUTO POWER")
+                self.frm_power_time.grid_remove()
         elif self.manual_voltage_active:
-            if self.controller_type == 'watlow':
-                out_val = self.ent_target_voltage.get()
-                states.append(f"MANUAL PWR ({out_val}%)")
-            else:
-                states.append(f"MANUAL ({self.target_voltage:.2f}V)")
-
+            states.append("MANUAL POWER")
+            self.frm_power_time.grid_remove()
+        else:
+            self.frm_power_time.grid_remove()
+            
         if self.temp_control_active:
-            if self.controller_type == 'watlow':
-                # Show timing from the F4T's own profile engine
-                step_rem  = fmt_hms(self.watlow_step_rem_hrs,
-                                    self.watlow_step_rem_min,
-                                    self.watlow_step_rem_sec)
-                total_rem = fmt_hms(self.watlow_prof_rem_hrs,
-                                    self.watlow_prof_rem_min)
-                step_type_name = _F4T_TYPE_MAP.get(self.watlow_prof_cur_type, "—")
-                states.append(
-                    f"AUTO TEMP | {step_type_name}  Step: {step_rem}  Total: {total_rem}")
+            if getattr(self, 'current_target_temp', None) is not None:
+                rem_str = format_time(self.current_temp_time_remaining)
+                states.append(f"AUTO TEMP ({self.current_target_temp:.1f} °C)")
+                self.lbl_temp_time.config(text=f"Seg {self.current_temp_segment}/{self.temp_total_segments} ⏱ {rem_str}")
+                self.frm_temp_time.grid()
             else:
-                if getattr(self, 'current_target_temp', None) is not None:
-                    rem = fmt_mins(getattr(self, 'current_temp_time_remaining', None))
-                    seg = getattr(self, 'current_temp_segment', '?')
-                    tot = getattr(self, 'temp_total_segments', '?')
-                    states.append(
-                        f"AUTO TEMP ({self.current_target_temp:.1f} °C)"
-                        + (f" | Seg {seg}/{tot}  {rem}" if rem else ""))
-                else:
-                    states.append("AUTO TEMP")
+                states.append("AUTO TEMP")
+                self.frm_temp_time.grid_remove()
+        else:
+            self.frm_temp_time.grid_remove()
+
+        # Display output if any control loop (or manual) is actively driving it
+        if self.controller_type != 'watlow':
+            if self.manual_voltage_active or self.temp_control_active or self.power_control_active:
+                states.append(f"Output ({self.target_voltage:.2f})")
+        else:
+            if self.manual_voltage_active:
+                out_val = self.ent_target_voltage.get()
+                states.append(f"Output ({out_val}%)")
 
         if not self.recording_active and not states:
             self.lbl_system_status.config(text="STANDBY", fg=self.colors["danger"])
             return
-
+            
         if not states:
             status_text = "MONITORING"
             color = self.colors["accent"]
         else:
-            status_text = "  ·  ".join(states)
+            status_text = " | ".join(states)
             color = self.colors["success"]
-
+            
         self.lbl_system_status.config(text=status_text, fg=color)
 
     def open_save_settings(self):
@@ -2570,64 +2571,59 @@ class BaseAPGUI:
     def _convert_f4t_steps_to_profile(self, raw_steps):
         """
         Convert the list of raw F4T step dicts (from download_profile_from_watlow)
-        into the {start, end, duration, rate, step_type} segment format used by
-        ProfileEditorDialog.
+        into the {start, end, duration, rate} segment format that ProfileEditorDialog uses.
 
         raw_steps entries:
-            type_name  – str   e.g. "Ramp Time", "Soak", "Ramp Rate", "Instant Change"
-            target     – float setpoint value
-            duration_h – float total hours
-            duration_m – float total minutes
-            rate       – float ramp rate (only meaningful for Ramp Rate steps)
-
-        All returned segments store duration in decimal hours — the same unit
-        used throughout the editor and upload path.
+            type_name  – str  e.g. "Ramp Time", "Soak", "Ramp Rate", "Instant Change"
+            target     – float (Loop 2 setpoint, Bar)
+            duration_h – float (total hours)
+            rate       – float (ramp rate in units/hr, only meaningful for Ramp Rate steps)
         """
         segments = []
         last_end = 0.0
 
         for step in raw_steps:
-            t      = step['type_name']
+            t = step['type_name']
             target = step['target']
-            dur    = step.get('duration_h', 0.0)   # always decimal hours
+            dur_h  = step['duration_h']
 
             if t == "Soak":
+                # Soak: hold at the same pressure for the duration
                 segments.append({
-                    'start':     target,
-                    'end':       target,
-                    'duration':  dur,
-                    'rate':      0.0,
-                    'step_type': 'Soak',
+                    'start':    target,
+                    'end':      target,
+                    'duration': dur_h,
+                    'rate':     0.0
                 })
             elif t == "Ramp Time":
-                rate = (target - last_end) / dur if dur > 0 else 0.0
+                # Ramp Time: go from last_end to target over the given duration
+                rate = (target - last_end) / dur_h if dur_h > 0 else 0.0
                 segments.append({
-                    'start':     last_end,
-                    'end':       target,
-                    'duration':  dur,
-                    'rate':      rate,
-                    'step_type': 'Ramp Time',
+                    'start':    last_end,
+                    'end':      target,
+                    'duration': dur_h,
+                    'rate':     rate
                 })
             elif t == "Ramp Rate":
-                rate  = step['rate']
+                # Ramp Rate: step stores the rate directly; derive duration
+                rate = step['rate']
                 delta = abs(target - last_end)
-                dur   = (delta / rate) if rate > 0 else 0.0
+                dur_h = (delta / rate) if rate > 0 else 0.0
                 segments.append({
-                    'start':     last_end,
-                    'end':       target,
-                    'duration':  dur,
-                    'rate':      rate if target >= last_end else -rate,
-                    'step_type': 'Ramp Rate',
+                    'start':    last_end,
+                    'end':      target,
+                    'duration': dur_h,
+                    'rate':     rate if target >= last_end else -rate
                 })
             elif t == "Instant Change":
+                # Instant change: jump setpoint immediately (zero duration)
                 segments.append({
-                    'start':     last_end,
-                    'end':       target,
-                    'duration':  0.0,
-                    'rate':      0.0,
-                    'step_type': 'Ramp Time',   # closest equivalent in the editor
+                    'start':    last_end,
+                    'end':      target,
+                    'duration': 0.0,
+                    'rate':     0.0
                 })
-            # Wait For / Jump / End steps are metadata-only; skip them
+            # Wait For / Jump / End steps are metadata-only and don't map to segments
             else:
                 continue
 
@@ -2647,21 +2643,26 @@ class BaseAPGUI:
               f"End Action: {end_action}")
 
         if self.controller_type == 'watlow' and self.watlow_controller:
-            steps = []
-            for seg in new_profile:
-                steps.append({
-                    'end':       seg['end'],
-                    'duration':  seg['duration'],   # decimal hours
-                    'rate':      seg.get('rate', 0.0),
-                    'step_type': seg.get('step_type', 'Ramp Time'),
-                })
-            with self.serial_lock:
-                success = self.upload_profile_to_watlow(steps, end_action=end_action)
-            if success:
-                print("Pressure profile uploaded to Watlow F4T successfully.")
-            else:
-                messagebox.showerror("Upload Error",
-                    "Failed to upload pressure profile to Watlow F4T.", parent=self.root)
+            if messagebox.askyesno("Watlow F4T", "Upload this profile to Watlow F4T (Profile 1)?", parent=self.root):
+                steps = []
+                for seg in new_profile:
+                    steps.append({
+                        'end':       seg['end'],
+                        'duration':  seg['duration'] * 60.0,   # hours → minutes
+                        'rate':      seg.get('rate', 0.0),
+                        'step_type': seg.get('step_type', 'Ramp Time'),
+                    })
+
+                with self.serial_lock:
+                    success = self.upload_profile_to_watlow(steps, end_action=end_action)
+
+                if success:
+                    messagebox.showinfo("Success", "Profile uploaded successfully.", parent=self.root)
+                    if messagebox.askyesno("Success", "Profile uploaded successfully.\n\nStart Profile 1 now?", parent=self.root):
+                        with self.serial_lock:
+                            self.watlow_controller.write_uint16(_REG_PROF_ACTION, 1782)
+                else:
+                    messagebox.showerror("Error", "Failed to upload profile.", parent=self.root)
 
     def download_profile_from_watlow(self, profile_id=1):
         """
@@ -2819,14 +2820,14 @@ class BaseAPGUI:
                     print(f"  Uploaded step {step_num} [{step_type}]: "
                           f"target={step['end']:.2f} Bar  rate={step['rate']:.4f} Bar/hr")
                 else:
-                    # duration stored as decimal hours → split to H and M
-                    total_m = int(round(step['duration'] * 60))
-                    h, m = divmod(total_m, 60)
+                    total_s = int(round(step['duration'] * 60))   # minutes → seconds
+                    h, rem  = divmod(total_s, 3600)
+                    m, s    = divmod(rem, 60)
                     _write(_REG_PROF_TIME_H, h)
                     _write(_REG_PROF_TIME_M, m)
-                    _write(_REG_PROF_TIME_S, 0)
+                    _write(_REG_PROF_TIME_S, s)
                     print(f"  Uploaded step {step_num} [{step_type}]: "
-                          f"target={step['end']:.2f} Bar  dur={h:02d}:{m:02d}")
+                          f"target={step['end']:.2f} Bar  dur={h:02d}:{m:02d}:{s:02d}")
 
                 time.sleep(0.04)
 
@@ -2906,8 +2907,8 @@ class BaseAPGUI:
                 ProfileEditorDialog(
                     self.root, profile_to_edit, self.save_temp_profile,
                     title="Input Temperature Profile",
-                    value_label="Temperature (C)",
-                    rate_label="Rate (C/Hr)",
+                    value_label="Temperature (°C)",
+                    rate_label="Rate (°C/Hr)",
                     f4t_ip=self.watlow_ip_address,
                     f4t_connected=True,
                     loop=1)
@@ -2918,8 +2919,8 @@ class BaseAPGUI:
             ProfileEditorDialog(
                 self.root, self.temperature_profile, self.save_temp_profile,
                 title="Input Temperature Profile",
-                value_label="Temperature (C)",
-                rate_label="Rate (C/Hr)",
+                value_label="Temperature (°C)",
+                rate_label="Rate (°C/Hr)",
                 f4t_ip=None,
                 f4t_connected=False,
                 loop=1)
@@ -2936,21 +2937,25 @@ class BaseAPGUI:
               f"End Action: {end_action}")
 
         if self.controller_type == 'watlow' and self.watlow_controller:
-            steps = []
-            for seg in new_profile:
-                steps.append({
-                    'end':       seg['end'],
-                    'duration':  seg['duration'],
-                    'rate':      seg.get('rate', 0.0),
-                    'step_type': seg.get('step_type', 'Ramp Time'),
-                })
-            with self.serial_lock:
-                success = self.upload_temp_profile_to_watlow(steps, end_action=end_action)
-            if success:
-                print("Temperature profile uploaded to Watlow F4T successfully.")
-            else:
-                messagebox.showerror("Upload Error",
-                    "Failed to upload temperature profile to Watlow F4T.", parent=self.root)
+            if messagebox.askyesno("Watlow F4T", "Upload this profile to Watlow F4T (Profile 1)?", parent=self.root):
+                steps = []
+                for seg in new_profile:
+                    steps.append({
+                        'end':       seg['end'],
+                        'duration':  seg['duration'] * 60.0,   # hours → minutes
+                        'rate':      seg.get('rate', 0.0),
+                        'step_type': seg.get('step_type', 'Ramp Time'),
+                    })
+
+                with self.serial_lock:
+                    success = self.upload_temp_profile_to_watlow(steps, end_action=end_action)
+
+                if success:
+                    if messagebox.askyesno("Success", "Profile uploaded successfully.\n\nStart Profile 1 now?", parent=self.root):
+                        with self.serial_lock:
+                            self.watlow_controller.write_uint16(_REG_PROF_ACTION, 1782)
+                else:
+                    messagebox.showerror("Error", "Failed to upload temperature profile.", parent=self.root)
 
     def download_temp_profile_from_watlow(self, profile_id=1):
         """
@@ -3104,14 +3109,14 @@ class BaseAPGUI:
                     print(f"  Uploaded step {step_num} [{step_type}]: "
                           f"target={step['end']:.2f} °C  rate={step['rate']:.4f} °C/hr")
                 else:
-                    # duration stored as decimal hours → split to H and M
-                    total_m = int(round(step['duration'] * 60))
-                    h, m = divmod(total_m, 60)
+                    total_s = int(round(step['duration'] * 60))   # minutes → seconds
+                    h, rem  = divmod(total_s, 3600)
+                    m, s    = divmod(rem, 60)
                     _write(_REG_PROF_TIME_H, h)
                     _write(_REG_PROF_TIME_M, m)
-                    _write(_REG_PROF_TIME_S, 0)
+                    _write(_REG_PROF_TIME_S, s)
                     print(f"  Uploaded step {step_num} [{step_type}]: "
-                          f"target={step['end']:.2f} °C  dur={h:02d}:{m:02d}")
+                          f"target={step['end']:.2f} °C  dur={h:02d}:{m:02d}:{s:02d}")
 
                 time.sleep(0.04)
 

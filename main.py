@@ -1663,7 +1663,7 @@ class BaseAPGUI:
             canvas.create_rectangle(w-20, 0, w, h, fill=self.colors["card"], outline="") # Right
 
             # --- Title & Labels ---
-            canvas.create_text(w/2, 20, text=f"{display_text} vs Time", font=("Arial", 12, "bold"), fill="white")
+            canvas.create_text(w/2, 20, text=display_text, font=("Arial", 12, "bold"), fill="white")
             canvas.create_text(w/2, h-5, text="Time (HH:MM:SS)", font=("Arial", 10), fill="#b0b0b0", anchor="s")
             canvas.create_text(15, h/2, text=display_text, angle=90, font=("Arial", 10), fill="#b0b0b0")
 
@@ -1692,7 +1692,7 @@ class BaseAPGUI:
             canvas.create_rectangle(x_margin, 40, w-20, h-y_margin, outline="white", width=2)
 
         else: # Handle case with no or single data point
-            canvas.create_text(w/2, 20, text=f"{display_text} vs Time", font=("Arial", 12, "bold"), fill="white")
+            canvas.create_text(w/2, 20, text=display_text, font=("Arial", 12, "bold"), fill="white")
             canvas.create_rectangle(x_margin, 40, w-20, h-y_margin, outline="white", width=2)
             canvas.create_text(w/2, h/2, text="No data to display", fill="#666677", font=("Arial", 12))
 

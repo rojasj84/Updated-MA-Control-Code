@@ -1387,12 +1387,19 @@ class BaseAPGUI:
         def style_chk(parent, text, var, cmd, color):
             return ToggleSwitch(parent, text=text, variable=var, command=cmd, bg=self.colors["card"], active_color=color)
 
+        # Allow column 2 to expand so the status labels get space
+        auto_grid.grid_columnconfigure(2, weight=1)
+
         # Temperature
         style_btn(auto_grid, "Load Temp Profile", self.open_temp_profile).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         
         self.var_auto_temp = tk.BooleanVar(value=False)
         self.chk_auto_temp = style_chk(auto_grid, "Enable Auto Temp", self.var_auto_temp, self.toggle_temp_control_check, self.colors["accent"])
         self.chk_auto_temp.grid(row=0, column=1, padx=5, pady=8, sticky="w")
+
+        self.lbl_temp_status = tk.Label(auto_grid, text="", fg=self.colors["accent"],
+                                        bg=self.colors["card"], font=("Arial", 10), anchor="w")
+        self.lbl_temp_status.grid(row=0, column=2, padx=(10, 5), pady=5, sticky="ew")
 
         # Pressure
         style_btn(auto_grid, "Load Pressure Profile", self.open_pressure_config).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
@@ -1401,12 +1408,20 @@ class BaseAPGUI:
         self.chk_auto_press = style_chk(auto_grid, "Enable Auto Pressure", self.var_auto_press, self.toggle_press_control_check, self.colors["success"])
         self.chk_auto_press.grid(row=1, column=1, padx=5, pady=8, sticky="w")
 
+        self.lbl_press_status = tk.Label(auto_grid, text="", fg=self.colors["success"],
+                                         bg=self.colors["card"], font=("Arial", 10), anchor="w")
+        self.lbl_press_status.grid(row=1, column=2, padx=(10, 5), pady=5, sticky="ew")
+
         # Power
         style_btn(auto_grid, "Load Power Profile", self.open_power_profile).grid(row=2, column=0, padx=5, pady=5, sticky="ew")
         
         self.var_auto_power = tk.BooleanVar(value=False)
         self.chk_auto_power = style_chk(auto_grid, "Enable Auto Power", self.var_auto_power, self.toggle_power_control_check, "#ff9800")
         self.chk_auto_power.grid(row=2, column=1, padx=5, pady=8, sticky="w")
+
+        self.lbl_power_status = tk.Label(auto_grid, text="", fg="#ff9800",
+                                         bg=self.colors["card"], font=("Arial", 10), anchor="w")
+        self.lbl_power_status.grid(row=2, column=2, padx=(10, 5), pady=5, sticky="ew")
 
         # Manual Control Card
         manual_card = tk.Frame(controls_container, bg=self.colors["card"], padx=15, pady=15)
@@ -2348,103 +2363,101 @@ class BaseAPGUI:
         self.target_voltage = new_voltage
 
     def update_system_status(self):
-        """Updates the status bar text based on active flags."""
+        """Updates the status bar and inline profile status labels."""
         states = []
 
         def fmt_hms(h, m, s=0):
-            """Format hours/minutes/seconds into a compact string."""
             total_m = int(h) * 60 + int(m)
             if total_m >= 60:
                 return f"{int(h)}h {int(m):02d}m"
-            else:
-                if s:
-                    return f"{int(m)}m {int(s):02d}s"
-                return f"{int(m)}m"
+            return f"{int(m)}m {int(s):02d}s" if s else f"{int(m)}m"
 
         def fmt_mins(mins):
-            """Format a float-minutes value into a compact string."""
             if mins is None:
                 return ""
             h = int(mins) // 60
             m = int(mins) % 60
             s = int((mins * 60) % 60)
-            if h:
-                return f"{h}h {m:02d}m"
-            return f"{m}m {s:02d}s"
+            return f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s"
 
-        if self.pressure_control_active:
-            if self.controller_type == 'watlow':
-                # Show timing from the F4T's own profile engine
-                step_rem  = fmt_hms(self.watlow_step_rem_hrs,
-                                    self.watlow_step_rem_min,
-                                    self.watlow_step_rem_sec)
-                total_rem = fmt_hms(self.watlow_prof_rem_hrs,
-                                    self.watlow_prof_rem_min)
-                step_type_name = _F4T_TYPE_MAP.get(self.watlow_prof_cur_type, "—")
-                states.append(
-                    f"AUTO PRESS | {step_type_name}  Step: {step_rem}  Total: {total_rem}")
-            else:
-                if getattr(self, 'current_target_pressure', None) is not None:
-                    rem = fmt_mins(getattr(self, 'current_press_time_remaining', None))
-                    seg = getattr(self, 'current_press_segment', '?')
-                    tot = getattr(self, 'press_total_segments', '?')
-                    states.append(
-                        f"AUTO PRESS ({self.current_target_pressure:.1f} Bar)"
-                        + (f" | Seg {seg}/{tot}  {rem}" if rem else ""))
-                else:
-                    states.append("AUTO PRESS")
-
-        if self.power_control_active:
-            if getattr(self, 'current_target_power', None) is not None:
-                rem = fmt_mins(getattr(self, 'current_power_time_remaining', None))
-                seg = getattr(self, 'current_power_segment', '?')
-                tot = getattr(self, 'power_total_segments', '?')
-                states.append(
-                    f"AUTO POWER ({self.current_target_power:.1f} W)"
-                    + (f" | Seg {seg}/{tot}  {rem}" if rem else ""))
-            else:
-                states.append("AUTO POWER")
-        elif self.manual_voltage_active:
-            if self.controller_type == 'watlow':
-                out_val = self.ent_target_voltage.get()
-                states.append(f"MANUAL PWR ({out_val}%)")
-            else:
-                states.append(f"MANUAL ({self.target_voltage:.2f}V)")
-
+        # ── Inline label: Temperature ────────────────────────────────────────
         if self.temp_control_active:
+            states.append("AUTO TEMP")
             if self.controller_type == 'watlow':
-                # Show timing from the F4T's own profile engine
+                step_type_name = _F4T_TYPE_MAP.get(self.watlow_prof_cur_type, "—")
                 step_rem  = fmt_hms(self.watlow_step_rem_hrs,
                                     self.watlow_step_rem_min,
                                     self.watlow_step_rem_sec)
                 total_rem = fmt_hms(self.watlow_prof_rem_hrs,
                                     self.watlow_prof_rem_min)
-                step_type_name = _F4T_TYPE_MAP.get(self.watlow_prof_cur_type, "—")
-                states.append(
-                    f"AUTO TEMP | {step_type_name}  Step: {step_rem}  Total: {total_rem}")
+                self.lbl_temp_status.config(
+                    text=f"{step_type_name}  ·  Step: {step_rem}  ·  Total: {total_rem}")
             else:
                 if getattr(self, 'current_target_temp', None) is not None:
                     rem = fmt_mins(getattr(self, 'current_temp_time_remaining', None))
                     seg = getattr(self, 'current_temp_segment', '?')
                     tot = getattr(self, 'temp_total_segments', '?')
-                    states.append(
-                        f"AUTO TEMP ({self.current_target_temp:.1f} °C)"
-                        + (f" | Seg {seg}/{tot}  {rem}" if rem else ""))
+                    self.lbl_temp_status.config(
+                        text=f"{self.current_target_temp:.1f} °C  ·  Seg {seg}/{tot}  ·  {rem}")
                 else:
-                    states.append("AUTO TEMP")
+                    self.lbl_temp_status.config(text="")
+        else:
+            self.lbl_temp_status.config(text="")
+
+        # ── Inline label: Pressure ───────────────────────────────────────────
+        if self.pressure_control_active:
+            states.append("AUTO PRESS")
+            if self.controller_type == 'watlow':
+                step_type_name = _F4T_TYPE_MAP.get(self.watlow_prof_cur_type, "—")
+                step_rem  = fmt_hms(self.watlow_step_rem_hrs,
+                                    self.watlow_step_rem_min,
+                                    self.watlow_step_rem_sec)
+                total_rem = fmt_hms(self.watlow_prof_rem_hrs,
+                                    self.watlow_prof_rem_min)
+                self.lbl_press_status.config(
+                    text=f"{step_type_name}  ·  Step: {step_rem}  ·  Total: {total_rem}")
+            else:
+                if getattr(self, 'current_target_pressure', None) is not None:
+                    rem = fmt_mins(getattr(self, 'current_press_time_remaining', None))
+                    seg = getattr(self, 'current_press_segment', '?')
+                    tot = getattr(self, 'press_total_segments', '?')
+                    self.lbl_press_status.config(
+                        text=f"{self.current_target_pressure:.1f} Bar  ·  Seg {seg}/{tot}  ·  {rem}")
+                else:
+                    self.lbl_press_status.config(text="")
+        else:
+            self.lbl_press_status.config(text="")
+
+        # ── Inline label: Power ──────────────────────────────────────────────
+        if self.power_control_active:
+            states.append("AUTO POWER")
+            if getattr(self, 'current_target_power', None) is not None:
+                rem = fmt_mins(getattr(self, 'current_power_time_remaining', None))
+                seg = getattr(self, 'current_power_segment', '?')
+                tot = getattr(self, 'power_total_segments', '?')
+                self.lbl_power_status.config(
+                    text=f"{self.current_target_power:.1f} W  ·  Seg {seg}/{tot}  ·  {rem}")
+            else:
+                self.lbl_power_status.config(text="")
+        else:
+            self.lbl_power_status.config(text="")
+
+        # ── Main status bar ──────────────────────────────────────────────────
+        if self.manual_voltage_active:
+            if self.controller_type == 'watlow':
+                out_val = self.ent_target_voltage.get()
+                states.append(f"MANUAL ({out_val}%)")
+            else:
+                states.append(f"MANUAL ({self.target_voltage:.2f}V)")
 
         if not self.recording_active and not states:
             self.lbl_system_status.config(text="STANDBY", fg=self.colors["danger"])
             return
 
         if not states:
-            status_text = "MONITORING"
-            color = self.colors["accent"]
+            self.lbl_system_status.config(text="MONITORING", fg=self.colors["accent"])
         else:
-            status_text = "  ·  ".join(states)
-            color = self.colors["success"]
-
-        self.lbl_system_status.config(text=status_text, fg=color)
+            self.lbl_system_status.config(text="  ·  ".join(states), fg=self.colors["success"])
 
     def open_save_settings(self):
         """Opens the Save Settings Dialog."""

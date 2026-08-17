@@ -310,39 +310,91 @@ class ZeroPressureDialog:
 class PIDSettingsDialog:
     def __init__(self, master, current_settings, on_save):
         self.top = tk.Toplevel(master)
-        self.top.title("PID Settings")
-        self.top.geometry("400x350")
+        self.top.title("PID & Valve Control Settings")
+        self.top.geometry("640x670")
         self.top.configure(bg="#1e1e2e")
+        self.top.resizable(False, False)
         self.on_save = on_save
         
-        tk.Label(self.top, text="PID Control Configuration", font=("Arial", 14, "bold"), bg="#1e1e2e", fg="white").pack(pady=(15, 10))
-        
-        main_frame = tk.Frame(self.top, bg="#2b2b3b", padx=20, pady=15)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-        
+        # Center dialog on master
+        self.top.transient(master)
+
+        # Header
+        header = tk.Frame(self.top, bg="#1e1e2e")
+        header.pack(fill=tk.X, padx=20, pady=(15, 6))
+        tk.Label(header, text="PID & Valve Control Configuration", font=("Arial", 14, "bold"), bg="#1e1e2e", fg="white").pack(anchor="w")
+        tk.Label(header, text="Configure PID gains, deadband thresholds, and metering valve travel limits", 
+                 font=("Arial", 9), bg="#1e1e2e", fg="#a0a0b0").pack(anchor="w", pady=(2, 0))
+
+        # Container
+        container = tk.Frame(self.top, bg="#1e1e2e")
+        container.pack(fill=tk.BOTH, expand=True, padx=15, pady=4)
+
         self.entries = {}
-        row = 0
-        for category, gains in current_settings.items():
-            cat_label = category.replace("_", " ").title()
-            tk.Label(main_frame, text=cat_label, font=("Arial", 11, "bold"), bg="#2b2b3b", fg="#00ffff").grid(row=row, column=0, columnspan=4, sticky="w", pady=(10 if row>0 else 0, 5))
-            row += 1
-            
-            self.entries[category] = {}
+
+        field_meta = {
+            "Kp": "Kp (Gain)",
+            "Ki": "Ki (Integral)",
+            "Kd": "Kd (Derivative)",
+            "deadband": "Deadband (Bar)",
+            "max_pos": "Max Pos (steps)",
+            "max_step": "Max Step/Cycle"
+        }
+
+        cat_order = [
+            ("pressure_up", "Pressure UP — Pump / Metering Motor A", "#00d4ff"),
+            ("pressure_down", "Pressure DOWN — Bleed / Metering Motor B", "#ff79c6"),
+            ("temperature_up", "Temperature UP — Heater Loop", "#50fa7b"),
+            ("power_up", "Power UP — Power Loop", "#f1fa8c")
+        ]
+
+        for cat_key, cat_title, color in cat_order:
+            if cat_key not in current_settings:
+                continue
+            gains = current_settings[cat_key]
+            self.entries[cat_key] = {}
+
+            card = tk.LabelFrame(container, text=f" {cat_title} ", font=("Arial", 10, "bold"),
+                                 bg="#2b2b3b", fg=color, padx=10, pady=6, bd=1, relief="solid")
+            card.pack(fill=tk.X, pady=4)
+
+            row = 0
             col = 0
-            for gain_name, value in gains.items():
-                tk.Label(main_frame, text=gain_name, bg="#2b2b3b", fg="white", font=("Arial", 10)).grid(row=row, column=col, sticky="e", padx=(10 if col>0 else 0, 5))
-                ent = tk.Entry(main_frame, width=8, font=("Arial", 10), justify="center")
+            for g_name, value in gains.items():
+                lbl_text = field_meta.get(g_name, g_name)
+                f_frame = tk.Frame(card, bg="#2b2b3b")
+                f_frame.grid(row=row, column=col, padx=8, pady=3, sticky="w")
+
+                tk.Label(f_frame, text=lbl_text, font=("Arial", 9), bg="#2b2b3b", fg="#e0e0e0").pack(anchor="w")
+                ent = tk.Entry(f_frame, width=12, font=("Arial", 10), justify="center", bg="#1e1e2e", fg="white",
+                               insertbackground="white", bd=1, relief="solid")
                 ent.insert(0, str(value))
-                ent.grid(row=row, column=col+1, sticky="w", padx=5)
-                self.entries[category][gain_name] = ent
-                col += 2
-            row += 1
-                
+                ent.pack(pady=(2, 0))
+                self.entries[cat_key][g_name] = ent
+
+                col += 1
+                if col >= 3:
+                    col = 0
+                    row += 1
+
+        # Information / Notes frame
+        info_frame = tk.Frame(self.top, bg="#1e1e2e", padx=5)
+        info_frame.pack(fill=tk.X, padx=15, pady=(4, 6))
+        notes = (
+            "• Deadband: Target tolerance around setpoint where shutoff valves close to lock pressure.\n"
+            "• Max Pos: Maximum needle metering valve opening steps (0 = closed/seated).\n"
+            "• Max Step/Cycle: Maximum motor step increment per 2s cycle for smooth throttling."
+        )
+        tk.Label(info_frame, text=notes, font=("Arial", 8), bg="#1e1e2e", fg="#8888aa", justify="left").pack(anchor="w")
+
+        # Action Buttons
         btn_frame = tk.Frame(self.top, bg="#1e1e2e")
-        btn_frame.pack(pady=(0, 20))
-        
-        tk.Button(btn_frame, text="SAVE TO JSON", bg="#4caf50", fg="white", font=("Arial", 10, "bold"), width=15, command=self.save).pack(side=tk.LEFT, padx=10)
-        tk.Button(btn_frame, text="CANCEL", bg="#f44336", fg="white", font=("Arial", 10, "bold"), width=12, command=self.top.destroy).pack(side=tk.LEFT, padx=10)
+        btn_frame.pack(fill=tk.X, padx=20, pady=(5, 15))
+
+        tk.Button(btn_frame, text="SAVE TO JSON", bg="#28a745", fg="white", font=("Arial", 10, "bold"),
+                  padx=15, pady=5, bd=0, relief="flat", cursor="hand2", command=self.save).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Button(btn_frame, text="CANCEL", bg="#dc3545", fg="white", font=("Arial", 10, "bold"),
+                  padx=15, pady=5, bd=0, relief="flat", cursor="hand2", command=self.top.destroy).pack(side=tk.LEFT)
 
     def save(self):
         new_settings = {}
@@ -350,7 +402,8 @@ class PIDSettingsDialog:
             for cat, gains in self.entries.items():
                 new_settings[cat] = {}
                 for g_name, ent in gains.items():
-                    new_settings[cat][g_name] = float(ent.get())
+                    val = float(ent.get().strip())
+                    new_settings[cat][g_name] = val
         except ValueError:
             messagebox.showerror("Error", "All values must be valid numbers.", parent=self.top)
             return
@@ -1140,6 +1193,9 @@ class BaseAPGUI:
         self.last_display_update_time = 0.0
         self.last_pressure_control_time = 0.0
         self.press_prev_error = None
+        self.press_integral_err = 0.0
+        self.press_pos_a = 0
+        self.press_pos_b = 0
         
         self.current_target_pressure = None
         self.current_target_temp = None
@@ -1865,12 +1921,19 @@ class BaseAPGUI:
                 return
             self.pressure_control_active = True
             self.press_prev_error = None
+            self.press_integral_err = 0.0
+            self.press_pos_a = 0
+            self.press_pos_b = 0
+            self.last_pressure_control_time = 0.0
             if not self.recording_active and not self.temp_control_active and not self.power_control_active:
                 self.start_time = time.time()
         else:
             self.pressure_control_active = False
             self.current_target_pressure = None
             self.press_prev_error = None
+            self.press_integral_err = 0.0
+            self.press_pos_a = 0
+            self.press_pos_b = 0
             self.motor_mgr.reset_hardware()
             print("Auto Pressure Control Disabled. Valves closed and motors reset.")
 
@@ -1915,6 +1978,11 @@ class BaseAPGUI:
         if self.pressure_profile:
             self.pressure_control_active = True
             self.var_auto_press.set(True)
+            self.press_prev_error = None
+            self.press_integral_err = 0.0
+            self.press_pos_a = 0
+            self.press_pos_b = 0
+            self.last_pressure_control_time = 0.0
             print(f"Pressure Control Started: {len(self.pressure_profile)} segments.")
         else:
             self.pressure_control_active = False
@@ -1970,6 +2038,12 @@ class BaseAPGUI:
         self.current_temp_segment = None
         self.current_power_segment = None
         self.press_prev_error = None
+        self.press_integral_err = 0.0
+        self.press_pos_a = 0
+        self.press_pos_b = 0
+
+        if self.controller_type != 'watlow':
+            self.motor_mgr.reset_hardware()
 
         self.recording_active = False
         print("Process Stopped.")
@@ -2149,7 +2223,11 @@ class BaseAPGUI:
                 self.current_press_time_remaining = None
                 self.current_press_segment = None
                 self.press_prev_error = None
-                self.motor_mgr.reset_hardware()
+                self.press_integral_err = 0.0
+                self.press_pos_a = 0
+                self.press_pos_b = 0
+                if self.controller_type != 'watlow':
+                    self.motor_mgr.reset_hardware()
                 print("Hardware Reset Executed.")
             else:
                 self.current_target_pressure = target_pressure
@@ -2164,60 +2242,127 @@ class BaseAPGUI:
                 else: # serial – motor PID control
                     control_interval = 2.0
                     if current_time - self.last_pressure_control_time >= control_interval:
-                        dt = current_time - self.last_pressure_control_time
+                        if self.last_pressure_control_time == 0.0:
+                            dt = control_interval
+                        else:
+                            dt = max(0.5, min(10.0, current_time - self.last_pressure_control_time))
                         self.last_pressure_control_time = current_time
 
-                        current_rate = active_segment['rate']
                         error = target_pressure - meas_press
 
-                        if self.press_prev_error is None:
+                        if error >= 0:
+                            cfg = self.pid_settings.get("pressure_up", {})
+                        else:
+                            cfg = self.pid_settings.get("pressure_down", {})
+
+                        Kp = float(cfg.get("Kp", 20.0))
+                        Ki = float(cfg.get("Ki", 0.2))
+                        Kd = float(cfg.get("Kd", 5.0))
+                        deadband = float(cfg.get("deadband", 1.0))
+                        max_pos = int(cfg.get("max_pos", 400))
+                        max_step = int(cfg.get("max_step", 30))
+
+                        # Within Deadband: Lock pressure by closing main shutoff valves
+                        if abs(error) <= deadband:
+                            cmds = ["AA0", "BA0"]
+                            if self.press_pos_a > 0:
+                                step_a = min(self.press_pos_a, max_step)
+                                cmds.append(f"A-{step_a}")
+                                self.press_pos_a -= step_a
+                            if self.press_pos_b > 0:
+                                step_b = min(self.press_pos_b, max_step)
+                                cmds.append(f"B-{step_b}")
+                                self.press_pos_b -= step_b
+
+                            cmd = ";".join(cmds)
+                            self.motor_mgr.send_command(cmd)
+                            self.press_integral_err = 0.0
                             self.press_prev_error = error
 
-                        delta_error = error - self.press_prev_error
-                        self.press_prev_error = error
-
-                        max_steps = 150
-
-                        if current_rate >= 0:
-                            Kp = self.pid_settings["pressure_up"]["Kp"]
-                            Ki = self.pid_settings["pressure_up"]["Ki"]
-
-                            p_term = Kp * delta_error
-                            i_term = Ki * error * dt
-
-                            step_size = int(p_term + i_term)
-                            step_size = max(-max_steps, min(max_steps, step_size))
-
-                            if step_size >= 0:
-                                cmd = f"BA0;AA8;A+{step_size}"
-                            else:
-                                cmd = f"BA0;AA8;A{step_size}"
-
-                            self.motor_mgr.send_command(cmd)
                             if hasattr(self, 'debug_win') and self.debug_win.window.winfo_exists():
-                                self.debug_win.log(f"AutoPress UP: Target={target_pressure:.1f} Meas={meas_press:.1f} Err={error:.2f} -> CMD: {cmd}")
+                                self.debug_win.log(f"AutoPress HOLD: Target={target_pressure:.1f} Meas={meas_press:.1f} (In Deadband ±{deadband:.1f} Bar) -> CMD: {cmd}")
 
-                        else:
-                            Kp = self.pid_settings["pressure_down"]["Kp"]
-                            Ki = self.pid_settings["pressure_down"]["Ki"]
+                        elif error > deadband:
+                            # Pressure UP: Main Up Valve (AA8) Open, Down Valve (BA0) Closed
+                            cmds = ["BA0"]
+                            if self.press_pos_b > 0:
+                                step_b = min(self.press_pos_b, max_step)
+                                cmds.append(f"B-{step_b}")
+                                self.press_pos_b -= step_b
 
+                            cmds.append("AA8")
+
+                            p_term = Kp * error
+                            self.press_integral_err += error * dt
+                            max_integral = (max_pos / Ki) if Ki > 0 else 0.0
+                            self.press_integral_err = max(0.0, min(max_integral, self.press_integral_err))
+                            i_term = Ki * self.press_integral_err
+
+                            if self.press_prev_error is not None:
+                                d_term = Kd * (error - self.press_prev_error) / dt
+                            else:
+                                d_term = 0.0
+                            self.press_prev_error = error
+
+                            target_pos_a = int(p_term + i_term + d_term)
+                            target_pos_a = max(0, min(max_pos, target_pos_a))
+
+                            delta_a = target_pos_a - self.press_pos_a
+                            step_cmd_a = max(-max_step, min(max_step, delta_a))
+                            self.press_pos_a += step_cmd_a
+
+                            if step_cmd_a > 0:
+                                cmds.append(f"A+{step_cmd_a}")
+                            elif step_cmd_a < 0:
+                                cmds.append(f"A{step_cmd_a}")
+
+                            cmd = ";".join(cmds)
+                            self.motor_mgr.send_command(cmd)
+
+                            if hasattr(self, 'debug_win') and self.debug_win.window.winfo_exists():
+                                self.debug_win.log(f"AutoPress UP: Target={target_pressure:.1f} Meas={meas_press:.1f} Err={error:.2f} PosA={self.press_pos_a}/{max_pos} -> CMD: {cmd}")
+
+                        else: # error < -deadband
+                            # Pressure DOWN (Bleed): Main Down Valve (BA8) Open, Up Valve (AA0) Closed
                             bleed_error = -error
-                            delta_bleed_error = -delta_error
+                            cmds = ["AA0"]
+                            if self.press_pos_a > 0:
+                                step_a = min(self.press_pos_a, max_step)
+                                cmds.append(f"A-{step_a}")
+                                self.press_pos_a -= step_a
 
-                            p_term = Kp * delta_bleed_error
-                            i_term = Ki * bleed_error * dt
+                            cmds.append("BA8")
 
-                            step_size = int(p_term + i_term)
-                            step_size = max(-max_steps, min(max_steps, step_size))
+                            p_term = Kp * bleed_error
+                            self.press_integral_err += bleed_error * dt
+                            max_integral = (max_pos / Ki) if Ki > 0 else 0.0
+                            self.press_integral_err = max(0.0, min(max_integral, self.press_integral_err))
+                            i_term = Ki * self.press_integral_err
 
-                            if step_size >= 0:
-                                cmd = f"AA0;BA8;B-{step_size}"
+                            if self.press_prev_error is not None:
+                                prev_bleed = -self.press_prev_error
+                                d_term = Kd * (bleed_error - prev_bleed) / dt
                             else:
-                                cmd = f"AA0;BA8;B+{-step_size}"
+                                d_term = 0.0
+                            self.press_prev_error = error
 
+                            target_pos_b = int(p_term + i_term + d_term)
+                            target_pos_b = max(0, min(max_pos, target_pos_b))
+
+                            delta_b = target_pos_b - self.press_pos_b
+                            step_cmd_b = max(-max_step, min(max_step, delta_b))
+                            self.press_pos_b += step_cmd_b
+
+                            if step_cmd_b > 0:
+                                cmds.append(f"B+{step_cmd_b}")
+                            elif step_cmd_b < 0:
+                                cmds.append(f"B{step_cmd_b}")
+
+                            cmd = ";".join(cmds)
                             self.motor_mgr.send_command(cmd)
+
                             if hasattr(self, 'debug_win') and self.debug_win.window.winfo_exists():
-                                self.debug_win.log(f"AutoPress DOWN: Target={target_pressure:.1f} Meas={meas_press:.1f} Err={error:.2f} -> CMD: {cmd}")
+                                self.debug_win.log(f"AutoPress DOWN: Target={target_pressure:.1f} Meas={meas_press:.1f} BleedErr={bleed_error:.2f} PosB={self.press_pos_b}/{max_pos} -> CMD: {cmd}")
 
         # Temperature Control Loop (Profile Execution)
         if self.temp_control_active and self.temperature_profile:
@@ -2467,10 +2612,30 @@ class BaseAPGUI:
 
     def load_pid_settings(self):
         default_settings = {
-            "pressure_up": {"Kp": 20.0, "Ki": 2.0},
-            "pressure_down": {"Kp": 20.0, "Ki": 2.0},
-            "temperature_up": {"Kp": 0.001, "Ki": 0.0},
-            "power_up": {"Kp": 0.01, "Ki": 0.0}
+            "pressure_up": {
+                "Kp": 20.0,
+                "Ki": 0.2,
+                "Kd": 5.0,
+                "deadband": 1.0,
+                "max_pos": 400.0,
+                "max_step": 30.0
+            },
+            "pressure_down": {
+                "Kp": 20.0,
+                "Ki": 0.2,
+                "Kd": 5.0,
+                "deadband": 1.0,
+                "max_pos": 400.0,
+                "max_step": 30.0
+            },
+            "temperature_up": {
+                "Kp": 0.001,
+                "Ki": 0.0
+            },
+            "power_up": {
+                "Kp": 0.01,
+                "Ki": 0.0
+            }
         }
         if os.path.exists(self.pid_config_file):
             try:

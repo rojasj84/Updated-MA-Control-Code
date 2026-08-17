@@ -1,14 +1,22 @@
 {
     "pressure_up": {
         "Kp": 20.0,
-        "Ki": 2.0
+        "Ki": 0.2,
+        "Kd": 5.0,
+        "deadband": 1.0,
+        "max_pos": 400.0,
+        "max_step": 30.0
     },
     "pressure_down": {
         "Kp": 20.0,
-        "Ki": 2.0
+        "Ki": 0.2,
+        "Kd": 5.0,
+        "deadband": 1.0,
+        "max_pos": 400.0,
+        "max_step": 30.0
     },
     "temperature_up": {
-        "Kp": 5e-05,
+        "Kp": 0.001,
         "Ki": 0.0
     },
     "power_up": {
